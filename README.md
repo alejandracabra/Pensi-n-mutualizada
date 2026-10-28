@@ -35,7 +35,7 @@ Generar evidencia cuantitativa sobre la sostenibilidad de una bolsa colectiva qu
 └── dashboard/
 ```
 
-Los notebooks numerados son plantillas vacías para mantener el orden del análisis. `Proyecto_Grado.ipynb` se conserva como material de trabajo existente y busca `Base_Proyecto.xlsx` en `data/raw/` y en la raíz del proyecto (también al ejecutarlo desde `notebooks/`). Para mantener una estructura limpia, se recomienda guardar localmente el archivo fuente en `data/raw/`.
+El notebook `notebooks/01_exploracion.ipynb` contiene el EDA inicial y genera `reports/exploracion.html` y `reports/exploracion.md`; los notebooks `02` a `06` se conservan como plantillas para las etapas posteriores. `Proyecto_Grado.ipynb` se conserva como material de trabajo y busca `Base_Proyecto.xlsx` en `data/raw/` y en la raíz del proyecto (también al ejecutarlo desde `notebooks/`). Para mantener una estructura limpia, se recomienda guardar localmente el archivo fuente en `data/raw/`.
 
 ## Requisitos
 
@@ -64,7 +64,19 @@ Abra el proyecto en VS Code y seleccione el intérprete de `.venv`. En macOS/Lin
 4. Documente cada transformación y cada supuesto actuarial.
 5. Inspeccione los resultados para detectar datos identificables antes de exportar o compartir.
 
-El notebook previo `Proyecto_Grado.ipynb` busca `Base_Proyecto.xlsx` en la raíz o en `data/raw/`. Los seis notebooks numerados aún no contienen análisis.
+El EDA se ejecuta en `notebooks/01_exploracion.ipynb`; los reportes y sus agregados locales no se versionan por defecto. El notebook previo `Proyecto_Grado.ipynb` busca `Base_Proyecto.xlsx` en la raíz o en `data/raw/`.
+
+Para ejecutar el EDA desde la raíz del proyecto:
+
+```powershell
+jupyter lab notebooks/01_exploracion.ipynb
+```
+
+Ejecute las celdas en orden. Se generan `reports/exploracion.html` (dashboard autocontenido, con Plotly embebido) y `reports/exploracion.md`. Para validar los módulos:
+
+```powershell
+python -m unittest discover -s tests -v
+```
 
 ## Referencias iniciales
 
