@@ -1,0 +1,15 @@
+# Dependencias base para análisis, modelación y visualización
+pandas>=2.2
+numpy>=1.26
+scipy>=1.12
+matplotlib>=3.8
+seaborn>=0.13
+plotly>=5.20
+statsmodels>=0.14
+lifelines>=0.29
+scikit-learn>=1.4
+
+# Lectura del archivo fuente Excel y ejecución de notebooks
+openpyxl>=3.1
+jupyterlab>=4.1
+ipykernel>=6.29
