@@ -9,15 +9,17 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 
-from src.data.profile import safe_category_counts
+from src.data.profile import FINANCIAL_COLUMNS, safe_category_counts
 from src.visualization.palette import (
     PLOTLY_TEMPLATE,
-    PROTECCION_ACCENT,
-    PROTECCION_CATEGORICAL,
-    PROTECCION_DARK,
-    PROTECCION_LIGHT,
-    PROTECCION_PRIMARY,
-    PROTECCION_SECONDARY,
+    SURA_ACCENT,
+    SURA_DARK,
+    SURA_LIGHT,
+    SURA_LIME,
+    SURA_PALETTE,
+    SURA_PRIMARY,
+    SURA_SECONDARY,
+    SURA_YELLOW,
 )
 
 
@@ -25,7 +27,23 @@ def _numeric(frame: pd.DataFrame, column: str) -> pd.Series:
     return pd.to_numeric(frame[column], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
 
 
-def _histogram(frame: pd.DataFrame, column: str, bins: int = 40) -> pd.DataFrame:
+def _format_millions(value: float) -> str:
+    return f"{value / 1_000_000:,.1f} M"
+
+
+def _format_money(value: float) -> str:
+    """Presenta importes en unidades legibles sin redondear saldos pequeños a cero."""
+    absolute_value = abs(value)
+    if absolute_value >= 1_000_000_000:
+        return f"${value / 1_000_000_000:.3g} mil millones"
+    if absolute_value >= 1_000_000:
+        return f"${value / 1_000_000:.3g} M"
+    if absolute_value >= 1_000:
+        return f"${value / 1_000:.3g} mil"
+    return f"${value:.3g}"
+
+
+def _histogram(frame: pd.DataFrame, column: str, bins: int = 20) -> pd.DataFrame:
     """Agrupa observaciones en intervalos para no exportar datos individuales."""
     values = _numeric(frame, column)
     if len(values) < 10:
@@ -93,6 +111,9 @@ def _histogram(frame: pd.DataFrame, column: str, bins: int = 40) -> pd.DataFrame
         elif right_tail >= 10 and index == len(grouped_edges) - 1:
             label = "≥ percentil 99"
             center = float(upper)
+        elif column in FINANCIAL_COLUMNS:
+            label = f"{_format_millions(start)} – {_format_millions(end)}"
+            center = (start + end) / 2
         else:
             label = f"{start:,.2f} – {end:,.2f}"
             center = (start + end) / 2
@@ -104,6 +125,114 @@ def _histogram(frame: pd.DataFrame, column: str, bins: int = 40) -> pd.DataFrame
         {
             "intervalo": labels,
             "conteo": grouped_counts,
+            "centro": centers,
+            "inicio": starts,
+            "fin": ends,
+        }
+    )
+
+
+def _log_histogram(frame: pd.DataFrame, column: str, bins: int = 16) -> pd.DataFrame:
+    """Construye intervalos geométricos agregados e incluye por separado el capital cero."""
+    values = _numeric(frame, column)
+    if values.empty:
+        return pd.DataFrame(columns=["intervalo", "conteo", "centro", "inicio", "fin"])
+
+    positive = values[values > 0]
+    zero_count = int((values == 0).sum())
+    negative_count = int((values < 0).sum())
+    nonpositive_count = zero_count + negative_count
+
+    if len(positive) < 10:
+        combined_count = nonpositive_count + len(positive)
+        if combined_count >= 10:
+            label = "Capital no positivo / positivos agrupados (n < 10)"
+            return pd.DataFrame(
+                {
+                    "intervalo": [label],
+                    "conteo": [combined_count],
+                    "centro": [0.0],
+                    "inicio": [0.0],
+                    "fin": [0.0],
+                }
+            )
+        return pd.DataFrame(columns=["intervalo", "conteo", "centro", "inicio", "fin"])
+
+    lower = float(positive.min())
+    upper = float(positive.max())
+    if lower == upper:
+        edges = np.geomspace(lower / 1.1, upper * 1.1, num=2)
+    else:
+        edges = np.geomspace(lower, upper, num=min(bins, max(2, positive.nunique())) + 1)
+    positive_counts, edges = np.histogram(positive.to_numpy(), bins=edges)
+
+    pending_count = 0
+    pending_start = float(edges[0])
+    grouped_counts: list[int] = []
+    grouped_edges: list[tuple[float, float]] = []
+    for index, count in enumerate(positive_counts):
+        pending_count += int(count)
+        if pending_count >= 10:
+            grouped_counts.append(pending_count)
+            grouped_edges.append((pending_start, float(edges[index + 1])))
+            pending_start = float(edges[index + 1])
+            pending_count = 0
+
+    if pending_count:
+        if grouped_counts:
+            grouped_counts[-1] += pending_count
+            grouped_edges[-1] = (grouped_edges[-1][0], float(edges[-1]))
+        elif nonpositive_count and nonpositive_count < 10:
+            counts[0] += nonpositive_count + pending_count
+            labels[0] = "Capital no positivo / primer intervalo logarítmico"
+            centers[0] = float(edges[-1] / 2)
+            starts[0] = 0.0
+            ends[0] = float(edges[-1])
+        else:
+            grouped_counts.append(pending_count)
+            grouped_edges.append((float(edges[0]), float(edges[-1])))
+
+    if nonpositive_count and nonpositive_count < 10:
+        grouped_counts[0] += nonpositive_count
+        grouped_edges[0] = (0.0, grouped_edges[0][1])
+        if negative_count:
+            first_label = "Capital ≤ 0 / primer intervalo logarítmico"
+        else:
+            first_label = "Capital = 0 / primer intervalo logarítmico"
+    else:
+        first_label = "Capital ≤ 0" if negative_count else "Capital = 0"
+
+    labels: list[str] = []
+    counts: list[int] = []
+    centers: list[float] = []
+    starts: list[float] = []
+    ends: list[float] = []
+    if nonpositive_count >= 10:
+        labels.append(first_label)
+        counts.append(nonpositive_count)
+        centers.append(0.0)
+        starts.append(0.0)
+        ends.append(0.0)
+
+    for index, ((start, end), count) in enumerate(
+        zip(grouped_edges, grouped_counts, strict=True)
+    ):
+        if nonpositive_count and nonpositive_count < 10 and index == 0:
+            label = (
+                f"{first_label}: {_format_money(start)} – {_format_money(end)}"
+            )
+        else:
+            label = f"{_format_money(start)} – {_format_money(end)}"
+        labels.append(label)
+        counts.append(count)
+        centers.append(float(np.sqrt(start * end)) if start > 0 else end / 2)
+        starts.append(start)
+        ends.append(end)
+
+    return pd.DataFrame(
+        {
+            "intervalo": labels,
+            "conteo": counts,
             "centro": centers,
             "inicio": starts,
             "fin": ends,
@@ -142,43 +271,64 @@ def distribution_figures(
     if values.empty:
         return {}
     histogram = _histogram(frame, column)
-    color = PROTECCION_PRIMARY
+    color = SURA_PRIMARY
     figures: dict[str, go.Figure] = {}
 
+    is_financial = column in FINANCIAL_COLUMNS
     hist = px.bar(
         histogram,
         x="intervalo",
         y="conteo",
         color_discrete_sequence=[color],
-        labels={"intervalo": display, "conteo": "Registros"},
-        title=f"Distribución de {display}",
+        labels={
+            "intervalo": (
+                "Intervalos monetarios (millones de pesos; escala lineal)"
+                if is_financial
+                else display
+            ),
+            "conteo": "Registros",
+        },
+        title=(
+            f"Histograma de {display} — intervalos lineales"
+            if is_financial
+            else f"Distribución de {display}"
+        ),
     )
     hist.update_traces(
         hovertemplate="Intervalo: %{x}<br>Registros: %{y:,}<extra></extra>"
     )
     hist.update_layout(template=PLOTLY_TEMPLATE, showlegend=False, xaxis_tickangle=-35)
-    if logarithmic and (histogram["centro"] > 0).all():
-        hist.update_xaxes(type="log")
     figures["histograma"] = hist
 
     positive = values[values > 0]
-    if logarithmic and len(positive) > 1 and positive.nunique() > 1:
-        positive_frame = pd.DataFrame({column: positive})
-        log_histogram = _histogram(positive_frame, column)
-        log_fig = px.bar(
-            log_histogram,
-            x="centro",
-            y="conteo",
-            color_discrete_sequence=[PROTECCION_DARK],
-            labels={"centro": display, "conteo": "Registros"},
-            title=f"Distribución de {display} en escala logarítmica (valores positivos)",
-        )
-        log_fig.update_traces(
-            hovertemplate="Centro del intervalo: %{x:,.2f}<br>Registros: %{y:,}<extra></extra>"
-        )
-        log_fig.update_xaxes(type="log")
-        log_fig.update_layout(template=PLOTLY_TEMPLATE, showlegend=False)
-        figures["histograma_log"] = log_fig
+    if logarithmic:
+        log_histogram = _log_histogram(frame, column)
+        if not log_histogram.empty:
+            log_fig = px.bar(
+                log_histogram,
+                x="intervalo",
+                y="conteo",
+                color_discrete_sequence=[SURA_DARK],
+                labels={
+                    "intervalo": "Rangos de capital (COP; intervalos logarítmicos categóricos)",
+                    "conteo": "Registros",
+                },
+                title=(
+                    f"Histograma logarítmico de {display}"
+                    "<br><sup>Las bandas base siguen una razón geométrica; las de menos de 10 "
+                    "registros se combinan con bandas vecinas. El saldo cero se muestra aparte "
+                    "y los nulos se excluyen.</sup>"
+                ),
+            )
+            log_fig.update_traces(
+                hovertemplate="Rango: %{x}<br>Registros: %{y:,}<extra></extra>"
+            )
+            log_fig.update_layout(
+                template=PLOTLY_TEMPLATE,
+                showlegend=False,
+                xaxis_tickangle=-35,
+            )
+            figures["histograma_log"] = log_fig
 
     density = _density_curve(histogram)
     density_fig = go.Figure()
@@ -188,8 +338,8 @@ def distribution_figures(
             y=density["densidad"],
             mode="lines",
             fill="tozeroy",
-            line={"color": PROTECCION_SECONDARY, "width": 2},
-            fillcolor="rgba(0,168,89,0.18)",
+            line={"color": SURA_SECONDARY, "width": 2},
+            fillcolor="rgba(78,195,224,0.18)",
             hovertemplate=f"{display}: %{{x:,.2f}}<br>Densidad relativa: %{{y:.4f}}<extra></extra>",
         )
     )
@@ -236,7 +386,7 @@ def completeness_figures(frame: pd.DataFrame) -> dict[str, go.Figure]:
             x=missing.values,
             y=missing.index,
             orientation="h",
-            marker_color=[PROTECCION_PRIMARY if value == 0 else PROTECCION_SECONDARY for value in missing.values],
+            marker_color=[SURA_PRIMARY if value == 0 else SURA_SECONDARY for value in missing.values],
             customdata=frame.isna().sum().reindex(missing.index).to_numpy(),
             hovertemplate="%{y}<br>Nulos: %{customdata:,}<br>Porcentaje: %{x:.2f}%<extra></extra>",
         )
@@ -259,7 +409,7 @@ def completeness_figures(frame: pd.DataFrame) -> dict[str, go.Figure]:
             x=frame.columns.tolist(),
             y=frame.columns.tolist(),
             customdata=display_count,
-            colorscale=[[0, PROTECCION_LIGHT], [1, PROTECCION_DARK]],
+            colorscale=[[0, SURA_LIGHT], [0.55, SURA_ACCENT], [1, SURA_DARK]],
             colorbar={"title": "% de registros"},
             hovertemplate=(
                 "Variables: %{y} / %{x}<br>"
@@ -299,7 +449,7 @@ def categorical_figures(frame: pd.DataFrame, column: str, label: str | None = No
             ignore_index=True,
         )
     display = label or column.replace("_", " ").capitalize()
-    colors = list(PROTECCION_CATEGORICAL)
+    colors = list(SURA_PALETTE)
     bar = px.bar(
         summary,
         x="categoria",
@@ -348,7 +498,7 @@ def risk_hierarchy_figures(frame: pd.DataFrame) -> dict[str, go.Figure]:
             path=dimensions,
             values="registros",
             color=dimensions[0],
-            color_discrete_sequence=PROTECCION_CATEGORICAL,
+            color_discrete_sequence=SURA_PALETTE,
             title="Composición conjunta de Riesgo y Riesgo 3",
         )
         fig.update_layout(template=PLOTLY_TEMPLATE)
@@ -386,7 +536,13 @@ def coverage_figure(frame: pd.DataFrame) -> go.Figure:
         go.Bar(
             x=labels,
             y=visible_counts.values,
-            marker_color=[PROTECCION_DARK, PROTECCION_SECONDARY, "#45B8AC", PROTECCION_PRIMARY, "#9AA9A3"],
+            marker_color=[
+                SURA_DARK,
+                SURA_SECONDARY,
+                SURA_ACCENT,
+                SURA_PRIMARY,
+                SURA_YELLOW,
+            ],
             text=[
                 "" if is_suppressed else f"{value / max(counts.sum(), 1):.1%}"
                 for value, is_suppressed in zip(counts.values, suppressed, strict=True)
@@ -442,7 +598,7 @@ def binned_relationship(
             x=x_labels,
             y=y_labels,
             z=np.where(heatmap.T < 10, np.nan, heatmap.T),
-            colorscale=[[0, PROTECCION_LIGHT], [0.55, PROTECCION_ACCENT], [1, PROTECCION_DARK]],
+            colorscale=[[0, SURA_LIGHT], [0.5, SURA_ACCENT], [1, SURA_DARK]],
             colorbar={"title": "Registros"},
             hovertemplate=f"{x_column}: %{{x:,.2f}}<br>{y_column}: %{{y:,.2f}}<br>Registros: %{{z:.0f}}<extra></extra>",
         )
@@ -477,7 +633,7 @@ def scatter_matrix_figure(frame: pd.DataFrame, columns: Iterable[str]) -> go.Fig
             if x_column == y_column:
                 hist = _histogram(frame, x_column, bins=20)
                 fig.add_trace(
-                    go.Bar(x=hist["centro"], y=hist["conteo"], marker_color=PROTECCION_PRIMARY),
+                    go.Bar(x=hist["centro"], y=hist["conteo"], marker_color=SURA_PRIMARY),
                     row=row,
                     col=col,
                 )
@@ -490,7 +646,7 @@ def scatter_matrix_figure(frame: pd.DataFrame, columns: Iterable[str]) -> go.Fig
                         x=(x_edges[:-1] + x_edges[1:]) / 2,
                         y=(y_edges[:-1] + y_edges[1:]) / 2,
                         z=np.where(z.T < 10, np.nan, z.T),
-                        colorscale=[[0, PROTECCION_LIGHT], [1, PROTECCION_DARK]],
+                        colorscale=[[0, SURA_LIGHT], [0.5, SURA_ACCENT], [1, SURA_DARK]],
                         showscale=False,
                         hovertemplate="Registros: %{z:.0f}<extra></extra>",
                     ),
@@ -521,7 +677,7 @@ def financial_correlation_figure(frame: pd.DataFrame, columns: Iterable[str]) ->
             y=corr.index,
             zmin=-1,
             zmax=1,
-            colorscale=[[0, PROTECCION_DARK], [0.5, "#FFFFFF"], [1, PROTECCION_PRIMARY]],
+            colorscale=[[0, SURA_DARK], [0.5, SURA_LIGHT], [1, SURA_LIME]],
             text=np.round(corr.to_numpy(), 2),
             texttemplate="%{text}",
             hovertemplate="%{y} / %{x}<br>Correlación: %{z:.3f}<extra></extra>",
@@ -550,8 +706,8 @@ def financial_violin_figures(frame: pd.DataFrame, columns: Iterable[str]) -> dic
                 x=np.concatenate([-widths, widths[::-1]]),
                 y=np.concatenate([x, x[::-1]]),
                 fill="toself",
-                fillcolor="rgba(0,168,89,0.28)",
-                line={"color": PROTECCION_SECONDARY},
+                fillcolor="rgba(78,195,224,0.28)",
+                line={"color": SURA_SECONDARY},
                 text=np.concatenate([density["densidad"], density["densidad"][::-1]]),
                 hovertemplate=f"{column}: %{{y:,.2f}}<br>Densidad agregada: %{{text:.4f}}<extra></extra>",
             )

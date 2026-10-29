@@ -26,10 +26,12 @@ from src.data.profile import (
 )
 from src.visualization.eda import coverage_band
 from src.visualization.palette import (
-    PROTECCION_DARK,
-    PROTECCION_LIGHT,
-    PROTECCION_PRIMARY,
-    PROTECCION_SECONDARY,
+    SURA_DARK,
+    SURA_FONT_FAMILY,
+    SURA_LIGHT,
+    SURA_PLOTLY_FONT,
+    SURA_PRIMARY,
+    SURA_SECONDARY,
 )
 
 
@@ -148,6 +150,18 @@ def build_markdown_report(frame: pd.DataFrame, source_name: str) -> str:
     financial = numeric_summary(frame, FINANCIAL_COLUMNS)
     outliers = iqr_outlier_summary(frame, [*DEMOGRAPHIC_COLUMNS, *FINANCIAL_COLUMNS])
     findings = automatic_findings(frame, kpis)
+    financial_data_quality = pd.DataFrame(
+        [
+            {
+                "variable": column,
+                "registros_validos": int(_number(frame, column).size),
+                "saldos_cero": int((_number(frame, column) == 0).sum()),
+                "nulos": int(frame[column].isna().sum()),
+            }
+            for column in FINANCIAL_COLUMNS
+            if column in frame
+        ]
+    )
 
     categorical_sections = []
     for column in CATEGORICAL_COLUMNS:
@@ -207,9 +221,13 @@ Estadísticas de edad y expectativa de vida, con percentiles 1, 5, 25, 50, 75, 9
 
 ## Análisis financiero
 
-Las variables monetarias conservan las unidades de la fuente; valide moneda y fecha de valoración con el responsable del dato.
+Las variables monetarias conservan las unidades y fecha de valoración de la fuente; valide la moneda antes de interpretar los valores. Los histogramas lineales usan intervalos de igual amplitud, y las versiones logarítmicas agrupan importes positivos en bandas base geométricas. Para evitar mostrar celdas con menos de 10 registros, se combinan bandas vecinas; por tanto, el ancho de los rangos finales puede variar. El eje X es categórico, no una escala logarítmica continua: las etiquetas muestran los límites monetarios de cada rango. Los saldos cero aparecen en una categoría separada y los valores nulos se excluyen del histograma; los conteos de las distribuciones se conservan en intervalos agregados.
 
 {_table_markdown(financial)}
+
+### Registros usados por los histogramas financieros
+
+{_table_markdown(financial_data_quality)}
 
 ## Análisis de riesgo y participación
 
@@ -296,13 +314,13 @@ def _dashboard_filter(frame: pd.DataFrame) -> str:
       type: "bar",
       x: Object.keys(grouped),
       y: Object.values(grouped),
-      marker: {{color: "{PROTECCION_PRIMARY}"}},
+      marker: {{color: "{SURA_PRIMARY}"}},
       hovertemplate: "%{{x}}<br>Registros: %{{y:,}}<extra></extra>"
     }}], {{
       title: risk.value ? "Registros por sexo" : "Registros por riesgo",
       paper_bgcolor: "#ffffff",
       plot_bgcolor: "#ffffff",
-      font: {{color: "{PROTECCION_DARK}"}},
+      font: {{family: "{SURA_PLOTLY_FONT}", color: "{SURA_DARK}"}},
       margin: {{t: 50, r: 20, b: 60, l: 60}},
       yaxis: {{title: "Registros"}}
     }}, {{responsive: true, displaylogo: false}});
@@ -323,8 +341,21 @@ def build_dashboard_html(
     sections = []
     for index, (name, figure) in enumerate(figures.items()):
         div_id = f"eda-figure-{index}"
+        chart_figure = go.Figure(figure)
+        chart_figure.update_layout(
+            font={"family": SURA_PLOTLY_FONT, "color": SURA_DARK},
+            legend={"font": {"family": SURA_PLOTLY_FONT, "color": SURA_DARK}},
+        )
+        chart_figure.update_xaxes(
+            tickfont={"family": SURA_PLOTLY_FONT, "color": SURA_DARK},
+            title_font={"family": SURA_PLOTLY_FONT, "color": SURA_DARK},
+        )
+        chart_figure.update_yaxes(
+            tickfont={"family": SURA_PLOTLY_FONT, "color": SURA_DARK},
+            title_font={"family": SURA_PLOTLY_FONT, "color": SURA_DARK},
+        )
         chart = pio.to_html(
-            figure,
+            chart_figure,
             full_html=False,
             include_plotlyjs=False,
             div_id=div_id,
@@ -338,10 +369,12 @@ def build_dashboard_html(
         f"<li>{html.escape(text)}</li>" for text in automatic_findings(frame, kpis)
     )
     styles = f"""
-    :root {{ --primary:{PROTECCION_PRIMARY}; --secondary:{PROTECCION_SECONDARY};
-      --light:{PROTECCION_LIGHT}; --dark:{PROTECCION_DARK}; }}
+    :root {{ --primary:{SURA_PRIMARY}; --secondary:{SURA_SECONDARY};
+      --light:{SURA_LIGHT}; --dark:{SURA_DARK}; --accent:#4EC3E0;
+      --lime:#E3E829; --yellow:#FFE946;
+      --font-sura:{SURA_FONT_FAMILY}; }}
     * {{ box-sizing:border-box; }}
-    body {{ margin:0; color:#23342e; background:#f4f8f6; font-family:Arial,sans-serif; }}
+    body {{ margin:0; color:var(--dark); background:var(--light); font-family:var(--font-sura); }}
     header {{ padding:3rem max(1.5rem,calc((100vw - 1200px)/2)); color:white;
       background:linear-gradient(120deg,var(--dark),var(--secondary)); }}
     header h1 {{ margin:.2rem 0 1rem; max-width:900px; font-size:clamp(2rem,4vw,3rem); }}
@@ -349,14 +382,15 @@ def build_dashboard_html(
     main {{ max-width:1200px; margin:2rem auto; padding:0 1rem; }}
     .kpis {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:1rem; }}
     .kpi,.chart,.filter-panel,.summary {{ background:white; border-radius:12px; padding:1.2rem;
-      box-shadow:0 2px 12px #173f3510; }}
-    .kpi span {{ display:block; color:#52645d; font-size:.9rem; }}
+      border:1px solid var(--accent); box-shadow:0 2px 12px rgba(0,51,160,.08); }}
+    .kpi span {{ display:block; color:var(--secondary); font-size:.9rem; }}
     .kpi strong {{ display:block; margin-top:.5rem; color:var(--dark); font-size:1.4rem; }}
     .chart,.filter-panel,.summary {{ margin-top:1.25rem; }}
-    .chart h2 {{ color:var(--dark); font-size:1.15rem; }}
-    select {{ display:block; margin:.4rem 0 1rem; padding:.55rem; min-width:220px; }}
-    .note {{ color:#52645d; font-size:.9rem; }}
-    footer {{ padding:2rem 1rem; text-align:center; color:#52645d; }}
+    .chart h2 {{ color:var(--dark); font-size:1.15rem; font-weight:600; }}
+    select {{ display:block; margin:.4rem 0 1rem; padding:.55rem; min-width:220px;
+      color:var(--dark); border:1px solid var(--secondary); accent-color:var(--primary); }}
+    .note {{ color:var(--secondary); font-size:.9rem; }}
+    footer {{ padding:2rem 1rem; text-align:center; color:var(--dark); border-top:3px solid var(--lime); }}
     """
     return f"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

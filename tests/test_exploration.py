@@ -13,13 +13,22 @@ from src.data.loader import find_workbook, normalize_columns
 from src.data.profile import iqr_outlier_summary, overview_table, safe_category_counts
 from src.visualization.eda import (
     _histogram,
+    _log_histogram,
     completeness_figures,
     coverage_band,
     distribution_figures,
 )
+from src.visualization.palette import SURA_FONT_FAMILY, SURA_PALETTE
 
 
 class ExplorationTests(unittest.TestCase):
+    def test_sura_palette_uses_requested_colors(self) -> None:
+        self.assertEqual(
+            SURA_PALETTE,
+            ("#0033A0", "#00AEC7", "#4EC3E0", "#E3E829", "#FFE946"),
+        )
+        self.assertIn("Sura Sans", SURA_FONT_FAMILY)
+
     def test_normalizes_source_headers(self) -> None:
         frame = pd.DataFrame(
             columns=[
@@ -66,7 +75,19 @@ class ExplorationTests(unittest.TestCase):
 
         self.assertEqual(int(histogram["conteo"].sum()), len(frame))
         self.assertTrue((histogram["conteo"] >= 10).all())
-        self.assertLessEqual(len(histogram), 42)
+        self.assertLessEqual(len(histogram), 22)
+        self.assertIn(" M", histogram["intervalo"].iloc[1])
+
+    def test_log_histogram_includes_zero_and_uses_aggregated_log_ranges(self) -> None:
+        positive = np.geomspace(1_000_000, 1_000_000_000, 500)
+        frame = pd.DataFrame({"capital": np.concatenate([np.zeros(100), positive])})
+
+        histogram = _log_histogram(frame, "capital")
+
+        self.assertEqual(int(histogram["conteo"].sum()), len(frame))
+        self.assertEqual(histogram["intervalo"].iloc[0], "Capital = 0")
+        self.assertTrue((histogram["conteo"] >= 10).all())
+        self.assertTrue(all(" M" in label for label in histogram["intervalo"].iloc[1:]))
 
     def test_coverage_bands_follow_requested_thresholds(self) -> None:
         frame = pd.DataFrame(
@@ -115,6 +136,24 @@ class ExplorationTests(unittest.TestCase):
         bar = figures["histograma"].data[0]
         self.assertEqual(sum(bar.y), len(frame))
         self.assertFalse(figures["boxplot"].data[0].boxpoints)
+
+    def test_financial_histograms_use_categorical_ranges_not_log_axis(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "capital": np.concatenate(
+                    [np.zeros(50), np.linspace(1_000_000, 100_000_000, 500)]
+                )
+            }
+        )
+
+        figures = distribution_figures(frame, "capital", logarithmic=True)
+
+        self.assertIsNone(figures["histograma"].layout.xaxis.type)
+        self.assertIsNone(figures["histograma_log"].layout.xaxis.type)
+        self.assertEqual(sum(figures["histograma"].data[0].y), len(frame))
+        self.assertEqual(sum(figures["histograma_log"].data[0].y), len(frame))
+        self.assertIn("intervalos lineales", figures["histograma"].layout.title.text)
+        self.assertIn("logarítmico", figures["histograma_log"].layout.title.text)
 
     def test_outlier_summary_does_not_return_individual_rows(self) -> None:
         frame = pd.DataFrame({"capital": [1.0] * 19 + [1_000_000.0]})
