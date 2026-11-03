@@ -14,11 +14,14 @@ from src.data.profile import iqr_outlier_summary, overview_table, safe_category_
 from src.visualization.eda import (
     _histogram,
     _log_histogram,
+    binned_relationship,
+    categorical_figures,
     completeness_figures,
     coverage_band,
     distribution_figures,
 )
 from src.visualization.palette import SURA_FONT_FAMILY, SURA_PALETTE
+from src.utils.reporting import _chart_interpretation, build_dashboard_html
 
 
 class ExplorationTests(unittest.TestCase):
@@ -126,6 +129,10 @@ class ExplorationTests(unittest.TestCase):
             len(figures["matriz_nulos"].data[0].z),
             len(frame.columns),
         )
+        matrix_values = np.asarray(figures["matriz_nulos"].data[0].z)
+        matrix_counts = np.asarray(figures["matriz_nulos"].data[0].customdata)
+        self.assertTrue(np.isnan(matrix_values[0, 1]))
+        self.assertTrue(np.isnan(matrix_counts[0, 1]))
 
     def test_distribution_charts_contain_aggregate_counts(self) -> None:
         frame = pd.DataFrame({"edad": np.tile(np.arange(20, 70), 4)})
@@ -163,6 +170,65 @@ class ExplorationTests(unittest.TestCase):
         self.assertEqual(result["extremos_iqr"].iloc[0], 1)
         self.assertNotIn("valor", result.columns)
         self.assertEqual(len(result), 1)
+
+    def test_interpretations_cover_distributions_categories_and_associations(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "edad": np.tile(np.arange(20, 70), 4),
+                "expectativa_vida": np.tile(np.arange(80, 30, -1), 4),
+                "capital": np.linspace(1_000_000, 100_000_000, 200),
+                "capital_necesario_sm": np.linspace(2_000_000, 200_000_000, 200),
+                "descapitalizado": ["Sí"] * 40 + ["No"] * 160,
+                "desfinanciado": ["Sí"] * 50 + ["No"] * 150,
+                "riesgo": ["VEJEZ"] * 120 + ["GPM"] * 80,
+                "riesgo_3": ["VEJEZ"] * 100 + ["GPM"] * 100,
+                "sexo": ["F"] * 110 + ["M"] * 90,
+            }
+        )
+        distribution = distribution_figures(frame, "edad")
+        categorical = categorical_figures(frame, "riesgo")
+        relationship = binned_relationship(
+            frame, "edad", "expectativa_vida", "Edad vs expectativa"
+        )
+        self.assertIsNotNone(relationship)
+
+        checks = (
+            _chart_interpretation(frame, "edad_histograma", distribution["histograma"]),
+            _chart_interpretation(frame, "riesgo_barras", categorical["barras"]),
+            _chart_interpretation(
+                frame, "relacion_edad_expectativa_vida", relationship
+            ),
+        )
+
+        for interpretation in checks:
+            self.assertGreaterEqual(len(interpretation), 1)
+            self.assertTrue(all(interpretation))
+            self.assertNotIn("Este gráfico es descriptivo", " ".join(interpretation))
+
+    def test_dashboard_renders_interpretation_for_each_chart(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "edad": np.tile(np.arange(20, 70), 4),
+                "expectativa_vida": np.tile(np.arange(80, 30, -1), 4),
+                "capital": np.linspace(1_000_000, 100_000_000, 200),
+                "capital_necesario_sm": np.linspace(2_000_000, 200_000_000, 200),
+                "descapitalizado": ["Sí"] * 40 + ["No"] * 160,
+                "desfinanciado": ["Sí"] * 50 + ["No"] * 150,
+                "riesgo": ["VEJEZ"] * 120 + ["GPM"] * 80,
+                "riesgo_3": ["VEJEZ"] * 100 + ["GPM"] * 100,
+                "sexo": ["F"] * 110 + ["M"] * 90,
+            }
+        )
+        figure = distribution_figures(frame, "edad")["histograma"]
+
+        dashboard = build_dashboard_html(
+            frame,
+            {"edad_histograma": figure, "edad_boxplot": distribution_figures(frame, "edad")["boxplot"]},
+        )
+
+        self.assertEqual(dashboard.count('aria-label="Interpretación estadística"'), 2)
+        self.assertIn("Mediana", dashboard)
+        self.assertIn("no representa tasas de mortalidad", dashboard)
 
 
 if __name__ == "__main__":

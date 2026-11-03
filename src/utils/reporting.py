@@ -85,6 +85,444 @@ def _format_number(value: Any, decimals: int = 2) -> str:
     return f"{value:,.{decimals}f}"
 
 
+def _format_money(value: float) -> str:
+    """Formatea importes sin asumir moneda, pues depende de los metadatos de origen."""
+    absolute_value = abs(value)
+    if absolute_value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:,.2f} mil millones"
+    if absolute_value >= 1_000_000:
+        return f"{value / 1_000_000:,.2f} millones"
+    if absolute_value >= 1_000:
+        return f"{value / 1_000:,.2f} mil"
+    return f"{value:,.2f}"
+
+
+def _variable_label(column: str) -> str:
+    """Proporciona una etiqueta legible para nombres normalizados de variables."""
+    return column.replace("_", " ")
+
+
+def _association_strength(value: float) -> str:
+    """Clasifica magnitudes de correlación como guía descriptiva, no inferencial."""
+    magnitude = abs(value)
+    if magnitude < 0.1:
+        return "prácticamente nula"
+    if magnitude < 0.3:
+        return "débil"
+    if magnitude < 0.5:
+        return "moderada"
+    if magnitude < 0.7:
+        return "marcada"
+    return "fuerte"
+
+
+def _spearman_correlation(pair: pd.DataFrame, x_column: str, y_column: str) -> float:
+    """Calcula Spearman como Pearson sobre rangos, evitando dependencias de scipy."""
+    ranked = pair[[x_column, y_column]].rank(method="average")
+    return float(ranked[x_column].corr(ranked[y_column]))
+
+
+def _distribution_statistics(frame: pd.DataFrame, column: str) -> pd.Series:
+    return _number(frame, column)
+
+
+def _describe_distribution(
+    frame: pd.DataFrame,
+    column: str,
+    kind: str,
+    figure: go.Figure,
+) -> list[str]:
+    """Interpreta distribución, forma, dispersión y extremos de una variable."""
+    values = _distribution_statistics(frame, column)
+    if values.empty:
+        return [f"No hay observaciones numéricas válidas para { _variable_label(column) }."]
+
+    sample_size = len(values)
+    missing_count = len(frame) - sample_size
+    median = float(values.median())
+    q1, q3 = (float(value) for value in values.quantile([0.25, 0.75]))
+    mean = float(values.mean())
+    iqr = q3 - q1
+    lower_fence = q1 - 1.5 * iqr
+    upper_fence = q3 + 1.5 * iqr
+    outliers = int(((values < lower_fence) | (values > upper_fence)).sum())
+    variable = _variable_label(column)
+    is_financial = column in FINANCIAL_COLUMNS
+
+    def format_value(value: float) -> str:
+        return _format_money(value) if is_financial else _format_number(value)
+
+    notes = [
+        f"Base efectiva: {sample_size:,} valores válidos"
+        + (f" y {missing_count:,} no disponibles." if missing_count else "."),
+    ]
+
+    if kind in {"histograma", "histograma_log"} and figure.data:
+        trace = figure.data[0]
+        counts = np.asarray(trace.y, dtype=float)
+        labels = [str(label) for label in trace.x]
+        if counts.size and counts.sum() > 0:
+            largest = int(np.argmax(counts))
+            share = counts[largest] / counts.sum() * 100
+            notes.append(
+                f"El intervalo con mayor frecuencia es «{labels[largest]}» "
+                f"({counts[largest]:,.0f}; {share:.1f}% de los válidos)."
+            )
+        if not is_financial:
+            notes.append(
+                f"Mediana {format_value(median)}; el 50% central se ubica entre "
+                f"{format_value(q1)} y {format_value(q3)}."
+            )
+        if kind == "histograma_log":
+            positive_share = float((values > 0).mean() * 100)
+            notes.append(
+                f"El {positive_share:.1f}% tiene saldo positivo. Los rangos positivos "
+                "son geométricos y el cero se presenta aparte: el eje X es categórico, "
+                "por lo que no se deben comparar las distancias visuales entre barras."
+            )
+        elif is_financial:
+            notes.append(
+                f"El 1.er cuartil es {format_value(q1)} y el 3.er cuartil "
+                f"{format_value(q3)}; el 50% central abarca ese intervalo."
+            )
+    elif kind == "densidad":
+        density = np.asarray(figure.data[0].y, dtype=float) if figure.data else np.array([])
+        locations = np.asarray(figure.data[0].x, dtype=float) if figure.data else np.array([])
+        if density.size and locations.size:
+            mode = float(locations[int(np.nanargmax(density))])
+            notes.append(
+                f"La mayor concentración suavizada se ubica cerca de "
+                f"{format_value(mode)}. Es una densidad aproximada construida con "
+                "intervalos agregados, no un estimador KDE sobre observaciones individuales."
+            )
+        notes.append(
+            "La curva describe la distribución marginal y no ajusta por edad, sexo, "
+            "riesgo ni otras covariables."
+        )
+    elif kind == "boxplot":
+        notes.append(
+            f"Mediana {format_value(median)}; rango intercuartílico "
+            f"{format_value(q1)}–{format_value(q3)} "
+            f"(IQR {format_value(iqr)}). Se identifican {outliers:,} valores fuera "
+            "de las cercas de Tukey (1.5 × IQR); son alertas para revisión, no errores confirmados."
+        )
+    elif kind == "violin":
+        skew = "media mayor que mediana" if mean > median else "media menor que mediana"
+        notes.append(
+            f"Mediana {format_value(median)}; IQR {format_value(q1)}–{format_value(q3)}. "
+            f"La {skew} ({format_value(mean)} frente a {format_value(median)}), "
+            "lo que sugiere asimetría que debe leerse junto con la escala del gráfico."
+        )
+        notes.append(
+            "El ancho del violín aproxima la densidad desde intervalos agregados; "
+            "no representa microdatos ni una estimación no paramétrica exacta."
+        )
+    else:
+        skewness = float(values.skew()) if sample_size > 2 else 0.0
+        if abs(skewness) >= 0.5:
+            shape = "asimetría a la derecha" if skewness > 0 else "asimetría a la izquierda"
+        else:
+            shape = "asimetría muestral reducida"
+        notes.append(
+            f"Media {format_value(mean)} y mediana {format_value(median)}; "
+            f"{shape} (asimetría de Fisher {skewness:.2f}). "
+            f"Fuera de las cercas de Tukey: {outliers:,} ({outliers / sample_size:.1%})."
+        )
+        if is_financial:
+            notes.append(
+                "La interpretación monetaria requiere confirmar moneda y fecha de valoración "
+                "en el diccionario de datos."
+            )
+
+    if column in {"expectativa_vida"}:
+        notes.append(
+            "La expectativa registrada es una variable descriptiva de la fuente; "
+            "no equivale a una curva de supervivencia ni a una tabla de mortalidad validada."
+        )
+    return notes
+
+
+def _describe_categorical(frame: pd.DataFrame, column: str, kind: str) -> list[str]:
+    """Resume concentración y denominador de una variable categórica."""
+    summary = safe_category_counts(frame, column)
+    valid_count = int(frame[column].notna().sum())
+    missing_count = int(frame[column].isna().sum())
+    if summary.empty or valid_count == 0:
+        return [f"No hay categorías observadas para {_variable_label(column)}."]
+
+    top = summary.iloc[0]
+    distinct_count = int(frame[column].nunique(dropna=True))
+    notes = [
+        f"Categoría principal: «{top['categoria']}», {int(top['registros']):,} registros "
+        f"({top['participacion_pct']:.1f}% de los registros, incluidos faltantes en el denominador "
+        "del resumen)."
+    ]
+    denominator = valid_count + missing_count
+    notes.append(
+        f"Categorías observadas: {distinct_count:,}; válidos: {valid_count:,}; "
+        f"faltantes: {missing_count:,} ({missing_count / denominator:.1%}). "
+        "La participación es descriptiva y depende de la codificación y definición de negocio."
+    )
+    if kind == "sunburst":
+        notes.append(
+            "El área representa participación relativa: el gráfico no implica jerarquía "
+            "causal ni transición entre categorías."
+        )
+    return notes
+
+
+def _describe_association(
+    frame: pd.DataFrame,
+    x_column: str,
+    y_column: str,
+    *,
+    logarithmic_x: bool = False,
+    logarithmic_y: bool = False,
+) -> list[str]:
+    """Interpreta la asociación monotónica y disponibilidad de un par numérico."""
+    if x_column not in frame or y_column not in frame:
+        return ["No están disponibles ambas variables para calcular la relación."]
+    pair = frame[[x_column, y_column]].apply(pd.to_numeric, errors="coerce")
+    pair = pair.replace([np.inf, -np.inf], np.nan).dropna()
+    initial_count = len(pair)
+    if logarithmic_x:
+        pair = pair[pair[x_column] > 0]
+    if logarithmic_y:
+        pair = pair[pair[y_column] > 0]
+    if len(pair) < 2:
+        return ["No hay suficientes pares válidos para resumir la asociación."]
+
+    rho = _spearman_correlation(pair, x_column, y_column)
+    direction = "positiva" if rho > 0 else "negativa" if rho < 0 else "nula"
+    notes = [
+        f"Se muestran {len(pair):,} pares completos"
+        + (
+            f" de {initial_count:,} pares completos antes del filtro de valores positivos."
+            if logarithmic_x or logarithmic_y
+            else "."
+        ),
+        f"Asociación monotónica de Spearman ρ = {rho:.2f} "
+        f"({direction}, magnitud {_association_strength(rho)}). "
+        "Describe asociación, no causalidad."
+    ]
+    if logarithmic_x or logarithmic_y:
+        filtered_variables = [
+            _variable_label(column)
+            for column, condition in (
+                (x_column, logarithmic_x),
+                (y_column, logarithmic_y),
+            )
+            if condition
+        ]
+        notes.append(
+            "La relación se calcula tras excluir valores no positivos de "
+            + ", ".join(filtered_variables)
+            + " para permitir representación logarítmica; no resume a quienes tienen saldo cero."
+        )
+    if column_is_financial(x_column) or column_is_financial(y_column):
+        notes.append(
+            "La posible asimetría y los valores extremos pueden afectar la lectura; "
+            "contraste los agregados visuales con percentiles y definiciones de negocio."
+        )
+    return notes
+
+
+def column_is_financial(column: str) -> bool:
+    """Indica si una variable pertenece al conjunto monetario del EDA."""
+    return column in FINANCIAL_COLUMNS
+
+
+def _chart_interpretation(
+    frame: pd.DataFrame,
+    name: str,
+    figure: go.Figure,
+) -> list[str]:
+    """Asigna una lectura estadística breve a cada gráfico del dashboard."""
+    if name == "completitud":
+        missing = frame.isna().mean().mul(100)
+        ranked = missing.sort_values(ascending=False)
+        nonzero = ranked[ranked > 0]
+        if nonzero.empty:
+            return ["No se observan valores faltantes en las variables representadas."]
+        top = nonzero.head(3)
+        detail = "; ".join(f"{column}: {value:.1f}%" for column, value in top.items())
+        complete_rows = int(frame.notna().all(axis=1).sum())
+        return [
+            f"Mayor faltante por variable: {detail}. La completitud total por fila es "
+            f"{complete_rows / max(len(frame), 1):.1%} ({complete_rows:,} de {len(frame):,}).",
+            "Los faltantes pueden reflejar reglas de aplicabilidad estructural (p. ej., "
+            "beneficiarios opcionales), no necesariamente errores; investigue su mecanismo antes de imputar."
+        ]
+
+    if name == "matriz_nulos":
+        mask = frame.isna().astype(np.uint8)
+        counts = mask.T @ mask
+        columns = list(frame.columns)
+        pairs = [
+            (int(counts.loc[left, right]), left, right)
+            for index, left in enumerate(columns)
+            for right in columns[index + 1 :]
+            if counts.loc[left, right] >= 10
+        ]
+        if not pairs:
+            return [
+                "No hay pares de variables con al menos 10 registros simultáneamente faltantes.",
+                "La matriz muestra proporción conjunta de nulos sobre el total de registros; "
+                "celdas con conteo menor que 10 se suprimen."
+            ]
+        count, left, right = max(pairs)
+        return [
+            f"Mayor co-ocurrencia entre variables distintas: {left} y {right}, "
+            f"{count:,} filas ({count / max(len(frame), 1):.1%} del total).",
+            "Es una proporción conjunta sobre toda la base, no una correlación ni una prueba "
+            "del mecanismo de ausencia; las celdas con menos de 10 casos se suprimen."
+        ]
+
+    if name == "cobertura":
+        bands = coverage_band(frame)
+        calculable = bands[bands != "No calculable"]
+        if calculable.empty:
+            return ["No hay casos con capital necesario positivo y ambos importes disponibles."]
+        below_one = calculable.isin(["< 0.5", "0.5 a < 0.8", "0.8 a < 1"])
+        notes = [
+            f"Cobertura calculable en {len(calculable):,} de {len(frame):,} registros "
+            f"({len(calculable) / max(len(frame), 1):.1%}). "
+            f"De ellos, {below_one.mean():.1%} tiene capital inferior al requerido "
+            "según esta comparación individual."
+        ]
+        counts = bands.value_counts()
+        top_band = str(counts.index[0])
+        notes.append(
+            f"Banda más frecuente: «{top_band}» ({int(counts.iloc[0]):,} registros). "
+            "Es una razón de capitales descriptiva; no incorpora flujos futuros, "
+            "supervivencia, rentabilidad, gastos ni mutualización, y no mide solvencia actuarial."
+        )
+        return notes
+
+    if name == "correlaciones_financieras":
+        columns = [column for column in FINANCIAL_COLUMNS if column in frame]
+        correlation = frame[columns].apply(pd.to_numeric, errors="coerce").corr()
+        pairs = [
+            (abs(float(correlation.loc[left, right])), float(correlation.loc[left, right]), left, right)
+            for index, left in enumerate(columns)
+            for right in columns[index + 1 :]
+            if pd.notna(correlation.loc[left, right])
+        ]
+        if not pairs:
+            return ["No se calcularon correlaciones para las variables financieras disponibles."]
+        _, value, left, right = max(pairs)
+        notes = [
+            f"Mayor correlación lineal de Pearson entre variables distintas: "
+            f"{_variable_label(left)} y {_variable_label(right)}, r = {value:.2f} "
+            f"({_association_strength(value)} en magnitud)."
+        ]
+        notes.append(
+            "Pearson mide asociación lineal y es sensible a asimetría, valores extremos "
+            "y saldos cero; no implica causalidad ni equivalencia entre medidas de capital."
+        )
+        return notes
+
+    if name in {"sunburst_riesgos", "treemap_riesgos"}:
+        risk = frame.get("riesgo", pd.Series(dtype="string")).astype("string").fillna("Sin dato")
+        risk3 = frame.get("riesgo_3", pd.Series(dtype="string")).astype("string").fillna("Sin dato")
+        counts = pd.DataFrame({"riesgo": risk, "riesgo_3": risk3}).value_counts()
+        if counts.empty:
+            return ["No hay categorías de riesgo disponibles para este gráfico."]
+        (top_risk, top_risk3), top_count = counts.index[0], int(counts.iloc[0])
+        top_risk_share = risk.value_counts(normalize=True).iloc[0] * 100
+        return [
+            f"La combinación más frecuente es «{top_risk} / {top_risk3}» "
+            f"({top_count:,} registros; {top_count / max(len(frame), 1):.1%} del total).",
+            f"La categoría principal de Riesgo concentra {top_risk_share:.1f}%. "
+            "El área representa conteos agregados; Riesgo 3 es una clasificación, "
+            "no una transición temporal inferida."
+        ]
+
+    relationship_map = {
+        "relacion_edad_expectativa_vida": ("edad", "expectativa_vida", False, False),
+        "relacion_edad_capital": ("edad", "capital", False, True),
+        "relacion_capital_descapitalizacion": ("capital", "descapitalizacion", True, False),
+        "relacion_capital_necesario_sm_capital": (
+            "capital_necesario_sm",
+            "capital",
+            True,
+            True,
+        ),
+    }
+    if name in relationship_map:
+        x_column, y_column, log_x, log_y = relationship_map[name]
+        return _describe_association(
+            frame,
+            x_column,
+            y_column,
+            logarithmic_x=log_x,
+            logarithmic_y=log_y,
+        )
+
+    if name == "matriz_relaciones":
+        columns = [
+            column
+            for column in ("edad", "expectativa_vida", "capital", "capital_necesario_sm")
+            if column in frame
+        ]
+        pairs = []
+        for index, left in enumerate(columns):
+            for right in columns[index + 1 :]:
+                pair = frame[[left, right]].apply(pd.to_numeric, errors="coerce").dropna()
+                if len(pair) >= 2:
+                    rho = _spearman_correlation(pair, left, right)
+                    pairs.append((abs(rho), rho, left, right, len(pair)))
+        if not pairs:
+            return ["No hay suficientes pares completos para resumir las relaciones."]
+        _, rho, left, right, count = max(pairs)
+        return [
+            f"Entre las relaciones fuera de la diagonal, la asociación monotónica de mayor "
+            f"magnitud es {_variable_label(left)}–{_variable_label(right)} "
+            f"(Spearman ρ = {rho:.2f}; n = {count:,}).",
+            "La diagonal resume distribuciones marginales; las demás celdas muestran conteos "
+            "en intervalos. Las celdas con menos de 10 casos se ocultan y no hay ajuste causal."
+        ]
+
+    if name.startswith("violin_"):
+        column = name.removeprefix("violin_")
+        return _describe_distribution(frame, column, "violin", figure)
+
+    for column in sorted(
+        set((*DEMOGRAPHIC_COLUMNS, *FINANCIAL_COLUMNS)),
+        key=len,
+        reverse=True,
+    ):
+        prefix = f"{column}_"
+        if name.startswith(prefix):
+            kind = name.removeprefix(prefix)
+            if kind in {"histograma", "histograma_log", "densidad", "boxplot"}:
+                return _describe_distribution(frame, column, kind, figure)
+
+    for column in CATEGORICAL_COLUMNS:
+        prefix = f"{column}_"
+        if name.startswith(prefix):
+            return _describe_categorical(
+                frame,
+                column,
+                name.removeprefix(prefix),
+            )
+
+    return [
+        "Este gráfico es descriptivo y resume los datos mostrados; interprete sus escalas, "
+        "denominador y supuestos de agrupación antes de comparar subgrupos."
+    ]
+
+
+def _interpretation_html(notes: list[str]) -> str:
+    """Renderiza notas estadísticas como HTML seguro, sin incorporar HTML de la fuente."""
+    items = "".join(f"<li>{html.escape(note)}</li>" for note in notes)
+    return (
+        '<aside class="interpretation" aria-label="Interpretación estadística">'
+        "<h3>Interpretación estadística</h3>"
+        f"<ul>{items}</ul></aside>"
+    )
+
+
 def _table_markdown(frame: pd.DataFrame, max_rows: int = 60) -> str:
     """Serializa tablas Markdown sin generar dependencias opcionales."""
     if frame.empty:
@@ -288,6 +726,10 @@ def _dashboard_filter(frame: pd.DataFrame) -> str:
   <select id="filter-sex"><option value="">Todos</option></select>
   <p id="filter-result" aria-live="polite"></p>
   <div id="filter-chart" role="img" aria-label="Participación agregada según los filtros seleccionados"></div>
+  <aside class="interpretation" aria-label="Interpretación estadística de los filtros">
+    <h3>Interpretación estadística</h3>
+    <p id="filter-interpretation" aria-live="polite"></p>
+  </aside>
   <p class="note">La vista de participación responde a los filtros. Los demás gráficos resumen la población completa.</p>
 </section>
 <script id="aggregate-data" type="application/json">{records}</script>
@@ -297,6 +739,7 @@ def _dashboard_filter(frame: pd.DataFrame) -> str:
   const risk = document.getElementById("filter-risk");
   const sex = document.getElementById("filter-sex");
   const result = document.getElementById("filter-result");
+  const interpretation = document.getElementById("filter-interpretation");
   const addOptions = (select, values) => [...new Set(values)].sort().forEach(value => {{
     const option = document.createElement("option"); option.value = value; option.textContent = value; select.appendChild(option);
   }});
@@ -305,6 +748,10 @@ def _dashboard_filter(frame: pd.DataFrame) -> str:
     const selected = rows.filter(row => (!risk.value || row.riesgo === risk.value) && (!sex.value || row.sexo === sex.value));
     const count = selected.reduce((total, row) => total + row.registros, 0);
     result.textContent = `Registros en el filtro: ${{count.toLocaleString("es-CO")}}`;
+    const share = rows.reduce((total, row) => total + row.registros, 0)
+      ? count / rows.reduce((total, row) => total + row.registros, 0) * 100
+      : 0;
+    interpretation.textContent = `La selección reúne ${{count.toLocaleString("es-CO")}} registros (${{share.toFixed(1)}}% del total de esta vista agregada). El gráfico compara conteos de la dimensión restante; no representa tasas de mortalidad, probabilidades ni efectos causales.`;
     const dimension = risk.value ? "sexo" : "riesgo";
     const grouped = selected.reduce((totals, row) => {{
       totals[row[dimension]] = (totals[row[dimension]] || 0) + row.registros;
@@ -362,7 +809,8 @@ def build_dashboard_html(
             config={"responsive": True, "displaylogo": False},
         )
         sections.append(
-            f'<section class="chart"><h2>{html.escape(name.replace("_", " ").capitalize())}</h2>{chart}</section>'
+            f'<section class="chart"><h2>{html.escape(name.replace("_", " ").capitalize())}'
+            f"</h2>{chart}{_interpretation_html(_chart_interpretation(frame, name, figure))}</section>"
         )
     filter_panel = _dashboard_filter(frame)
     findings = "".join(
@@ -387,6 +835,11 @@ def build_dashboard_html(
     .kpi strong {{ display:block; margin-top:.5rem; color:var(--dark); font-size:1.4rem; }}
     .chart,.filter-panel,.summary {{ margin-top:1.25rem; }}
     .chart h2 {{ color:var(--dark); font-size:1.15rem; font-weight:600; }}
+    .interpretation {{ margin-top:1rem; padding:.9rem 1rem; border-left:4px solid var(--lime);
+      border-radius:4px; background:#f6f8e8; color:var(--dark); line-height:1.5; }}
+    .interpretation h3 {{ margin:0 0 .45rem; color:var(--primary); font-size:1rem; }}
+    .interpretation ul {{ margin:.2rem 0 0; padding-left:1.25rem; }}
+    .interpretation li + li {{ margin-top:.3rem; }}
     select {{ display:block; margin:.4rem 0 1rem; padding:.55rem; min-width:220px;
       color:var(--dark); border:1px solid var(--secondary); accent-color:var(--primary); }}
     .note {{ color:var(--secondary); font-size:.9rem; }}

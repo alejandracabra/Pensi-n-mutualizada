@@ -402,10 +402,13 @@ def completeness_figures(frame: pd.DataFrame) -> dict[str, go.Figure]:
     co_missing_count = missing_mask.T @ missing_mask
     co_missing_pct = co_missing_count.div(max(len(frame), 1)).mul(100)
     display_count = co_missing_count.astype(float).to_numpy(copy=True)
-    display_count[display_count < 10] = np.nan
+    suppressed = display_count < 10
+    display_count[suppressed] = np.nan
+    displayed_pct = co_missing_pct.to_numpy(copy=True)
+    displayed_pct[suppressed] = np.nan
     matrix = go.Figure(
         go.Heatmap(
-            z=co_missing_pct.to_numpy(),
+            z=displayed_pct,
             x=frame.columns.tolist(),
             y=frame.columns.tolist(),
             customdata=display_count,
