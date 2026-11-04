@@ -65,6 +65,7 @@ reports/outputs/*
 !reports/outputs/.gitkeep
 reports/exploracion.html
 reports/exploracion.md
+reports/exploracion_ejecutiva.html
 
 # Configuración local o credenciales
 .env

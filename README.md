@@ -78,6 +78,16 @@ Ejecute las celdas en orden. Se generan `reports/exploracion.html` (dashboard au
 python -m unittest discover -s tests -v
 ```
 
+### Visualizaciones ejecutivas
+
+Para generar el paquete de figuras 16:9 para presentaciones, junto con sus versiones PNG (300 dpi), SVG, el HTML ejecutivo y la tabla descriptiva:
+
+```powershell
+python -m src.visualization.executive
+```
+
+Los archivos se guardan en `reports/outputs/presentacion_ejecutiva/figures/`, `reports/exploracion_ejecutiva.html` y `reports/tables/`. El HTML exploratorio original no se sobrescribe. Los resultados generados y los datos de afiliados permanecen excluidos de Git.
+
 ## Referencias iniciales
 
 - Shemtob, M. & Stoycheva, R. (2023). *Longevity Pooling Variable Pensions*.

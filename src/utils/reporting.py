@@ -336,8 +336,89 @@ def _chart_interpretation(
     frame: pd.DataFrame,
     name: str,
     figure: go.Figure,
+    isc_scenarios: pd.DataFrame | None = None,
+    isc_diagnostics: dict[str, int] | None = None,
 ) -> list[str]:
     """Asigna una lectura estadística breve a cada gráfico del dashboard."""
+    status_histogram_columns = {
+        "capital_por_descapitalizado": "descapitalizado",
+        "capital_por_desfinanciado": "desfinanciado",
+    }
+    if name in status_histogram_columns:
+        status_column = status_histogram_columns[name]
+        if status_column not in frame or "capital" not in frame:
+            return ["No están disponibles el capital y el estado financiero para interpretar este gráfico."]
+        capital = _number(frame, "capital")
+        status = frame.loc[capital.index, status_column].astype("string").fillna("Sin dato")
+        count_by_status = status.value_counts()
+        median_by_status = capital.groupby(status).median()
+        notes = [
+            f"Capital disponible válido en {len(capital):,} registros; "
+            f"{len(frame) - len(capital):,} se excluyen por capital faltante o no numérico."
+        ]
+        if not count_by_status.empty:
+            largest_group = str(count_by_status.index[0])
+            notes.append(
+                f"El grupo más numeroso es «{largest_group}» "
+                f"({int(count_by_status.iloc[0]):,} registros). "
+                "Las barras muestran conteos por intervalos de capital compartidos."
+            )
+        if len(median_by_status) >= 2:
+            medians = median_by_status.sort_values()
+            low_group, high_group = str(medians.index[0]), str(medians.index[-1])
+            notes.append(
+                f"Mediana del capital: «{low_group}» = {_format_money(float(medians.iloc[0]))}; "
+                f"«{high_group}» = {_format_money(float(medians.iloc[-1]))}. "
+                "La diferencia es descriptiva y no implica causalidad."
+            )
+        notes.append(
+            "Los extremos se combinan con los intervalos de borde y las celdas pequeñas "
+            "se agrupan para evitar mostrar grupos con menos de 10 registros."
+        )
+        return notes
+
+    if name in {"isc_escenarios_registros", "isc_escenarios_capital"}:
+        if isc_scenarios is None or isc_scenarios.empty:
+            return ["No se proporcionó una tabla de escenarios ISC para interpretar este gráfico."]
+        first = isc_scenarios.iloc[0]
+        last = isc_scenarios.iloc[-1]
+        additional = int(last["N_candidatos"] - first["N_candidatos"])
+        baseline = int(first["N_candidatos"])
+        notes = [
+            f"Con ISC < {first['Umbral_ISC']:.2f} hay {baseline:,} registros candidatos "
+            f"({first['Pct_universo_aplicable']:.1f}% del universo aplicable). "
+            f"Al ampliar el umbral a {last['Umbral_ISC']:.2f}, se incluyen "
+            f"{int(last['N_candidatos']):,}; son {additional:,} registros adicionales."
+        ]
+        if name == "isc_escenarios_capital":
+            notes.append(
+                f"En el escenario ISC < {last['Umbral_ISC']:.2f}, el capital + bono "
+                f"agregado es {_format_money(float(last['Capital_mas_bono_total']))} y la suma del "
+                f"capital requerido individual para 1 SM es "
+                f"{_format_money(float(last['Capital_SM_requerido']))}."
+            )
+        notes.append(
+            "ISC = capital_mas_bono / capital_necesario_sm. Se excluyen GPM y "
+            "SUSTITUCION - GPM porque la clasificación fuente no los marca como "
+            "descapitalizados. Estos conteos son escenarios por umbral, no una validación "
+            "de elegibilidad ni probabilidades. El capital requerido es el valor "
+            "actuarial observado en la fuente; no se recalcula ni se proyecta."
+        )
+        if isc_diagnostics:
+            notes.append(
+                f"Universo aplicable: {isc_diagnostics['isc_aplicable']:,}; "
+                f"no aplicables: {isc_diagnostics['riesgo_no_aplicable']:,}. "
+                f"ISC no calculable: {isc_diagnostics['isc_no_calculable']:,}."
+            )
+            if "diferencias_clasificacion" in isc_diagnostics:
+                notes.append(
+                    f"Con ISC < 1,00 se reproducen "
+                    f"{isc_diagnostics['coincidencias_clasificacion']:,} de "
+                    f"{isc_diagnostics['clasificacion_comparable']:,} clasificaciones "
+                    "observadas en el universo aplicable."
+                )
+        return notes
+
     if name == "completitud":
         missing = frame.isna().mean().mul(100)
         ranked = missing.sort_values(ascending=False)
@@ -396,6 +477,11 @@ def _chart_interpretation(
             f"Banda más frecuente: «{top_band}» ({int(counts.iloc[0]):,} registros). "
             "Es una razón de capitales descriptiva; no incorpora flujos futuros, "
             "supervivencia, rentabilidad, gastos ni mutualización, y no mide solvencia actuarial."
+        )
+        notes.append(
+            "Esta cobertura usa capital sin Bono y abarca todos los riesgos; no equivale "
+            "al indicador oficial de descapitalización, que en esta base se reproduce "
+            "con capital_mas_bono y excluye GPM y Sustitución-GPM."
         )
         return notes
 
@@ -523,6 +609,71 @@ def _interpretation_html(notes: list[str]) -> str:
     )
 
 
+def _isc_scenarios_html(
+    scenarios: pd.DataFrame,
+    diagnostics: dict[str, int],
+) -> str:
+    """Renderiza resultados determinísticos ISC y su denominador en una tabla HTML."""
+    columns = (
+        ("Umbral_ISC", "Umbral ISC"),
+        ("N_candidatos", "Registros candidatos"),
+        ("Pct_universo_aplicable", "% universo aplicable"),
+        ("Pct_registros_base", "% total de registros"),
+        ("Capital_mas_bono_total", "Capital + bono agregado"),
+        ("Capital_SM_requerido", "Capital requerido agregado (1 SM)"),
+        ("Brecha_capital_requerido", "Brecha agregada requerida - disponible"),
+        ("Edad_media", "Edad media (años)"),
+    )
+    headers = "".join(f"<th scope=\"col\">{html.escape(label)}</th>" for _, label in columns)
+    body_rows = []
+    for _, row in scenarios.iterrows():
+        cells = []
+        for key, _ in columns:
+            value = row[key]
+            if key == "Umbral_ISC":
+                formatted = f"{value:.2f}"
+            elif key == "N_candidatos":
+                formatted = f"{int(value):,}"
+            elif key in {"Pct_universo_aplicable", "Pct_registros_base"}:
+                formatted = f"{value:.1f}%"
+            elif key in {
+                "Capital_mas_bono_total",
+                "Capital_SM_requerido",
+                "Brecha_capital_requerido",
+            }:
+                formatted = _format_money(float(value))
+            else:
+                formatted = _format_number(value, decimals=1)
+            cells.append(f"<td>{html.escape(formatted)}</td>")
+        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    return f"""
+<section class="summary isc-scenarios">
+  <h2>ISC y escenarios determinísticos por umbral</h2>
+  <p><strong>Definición:</strong> ISC = (capital + bono) / capital necesario para 1 SM.
+  Cada fila selecciona registros con ISC estrictamente menor que el umbral indicado.
+  No se usan rendimientos futuros ni se estiman probabilidades.</p>
+  <p><strong>Base:</strong> {diagnostics['registros_base']:,} registros; ISC calculable en
+  {diagnostics['isc_calculable']:,}; no calculable en {diagnostics['isc_no_calculable']:,}.
+  Universo aplicable: {diagnostics['isc_aplicable']:,}; no aplicables:
+  {diagnostics['riesgo_no_aplicable']:,} (Riesgo GPM y Sustitución-GPM, que la clasificación
+  fuente no marca como descapitalizados). Los no calculables se excluyen. Los conteos
+  corresponden a registros de la hoja, no necesariamente a afiliados únicos.</p>
+  {f"<p>Validación contra Descapitalización observada: {diagnostics['coincidencias_clasificacion']:,} coincidencias de {diagnostics['clasificacion_comparable']:,} registros aplicables con ISC calculable; {diagnostics['diferencias_clasificacion']:,} diferencias.</p>" if 'diferencias_clasificacion' in diagnostics else ""}
+  {f"<p>Contraste de importes de la hoja, aplicando la regla observada (universo aplicable: brecha positiva; GPM y Sustitución-GPM: cero): Descapitalización coincide con max(capital_necesario_sm - capital_mas_bono, 0) en {diagnostics['monto_descapitalizacion_coincide']:,}/{diagnostics['monto_descapitalizacion_comparable']:,} registros; Desfinanciación coincide con max(capital_necesario_def - capital_mas_bono, 0) en {diagnostics['monto_desfinanciacion_coincide']:,}/{diagnostics['monto_desfinanciacion_comparable']:,}.</p>" if 'monto_desfinanciacion_coincide' in diagnostics and 'monto_descapitalizacion_coincide' in diagnostics else ""}
+  <div class="table-scroll"><table><thead><tr>{headers}</tr></thead>
+  <tbody>{"".join(body_rows)}</tbody></table></div>
+  <p class="note">El capital disponible agregado suma capital_mas_bono observado.
+  “Capital requerido agregado” suma capital_necesario_sm observado para
+  los registros seleccionados; no es una proyección de obligaciones ni un pasivo actuarial
+  de la bolsa. La brecha es requerido menos capital disponible y no considera flujos,
+  mortalidad, rentabilidad, gastos, actualización del SMMLV ni mutualización.
+  El Excel contiene valores, no las fórmulas del cálculo actuarial externo; este contraste
+  no audita sus supuestos de beneficiarios ni expectativa de vida.</p>
+</section>
+"""
+
+
 def _table_markdown(frame: pd.DataFrame, max_rows: int = 60) -> str:
     """Serializa tablas Markdown sin generar dependencias opcionales."""
     if frame.empty:
@@ -569,7 +720,8 @@ def automatic_findings(frame: pd.DataFrame, kpis: dict[str, Any]) -> list[str]:
         below = calculable.isin(["< 0.5", "0.5 a < 0.8", "0.8 a < 1"]).mean() * 100
         findings.append(
             f"Entre los registros con cobertura calculable, {below:.1f}% presenta "
-            "capital inferior al capital necesario para 1 SM."
+            "capital (sin Bono) inferior al capital necesario para 1 SM. Esta cobertura "
+            "global no equivale a la clasificación oficial de descapitalización."
         )
     findings.append(
         "La cobertura es un indicador exploratorio de suficiencia de capital individual; "
@@ -579,7 +731,12 @@ def automatic_findings(frame: pd.DataFrame, kpis: dict[str, Any]) -> list[str]:
     return findings
 
 
-def build_markdown_report(frame: pd.DataFrame, source_name: str) -> str:
+def build_markdown_report(
+    frame: pd.DataFrame,
+    source_name: str,
+    isc_scenarios: pd.DataFrame | None = None,
+    isc_diagnostics: dict[str, int] | None = None,
+) -> str:
     """Genera un informe técnico con tablas, KPIs y hallazgos automáticos."""
     overview = overview_table(frame)
     numeric = numeric_columns(frame)
@@ -600,6 +757,55 @@ def build_markdown_report(frame: pd.DataFrame, source_name: str) -> str:
             if column in frame
         ]
     )
+    isc_section = ""
+    if isc_scenarios is not None and not isc_scenarios.empty:
+        scenario_table = isc_scenarios[
+            [
+                "Umbral_ISC",
+                "N_candidatos",
+                "Pct_universo_aplicable",
+                "Pct_registros_base",
+                "Capital_mas_bono_total",
+                "Capital_SM_requerido",
+                "Brecha_capital_requerido",
+                "Edad_media",
+            ]
+        ].copy()
+        isc_validation = ""
+        if (
+            isc_diagnostics is not None
+            and "diferencias_clasificacion" in isc_diagnostics
+        ):
+            isc_validation = (
+                "En el contraste de la hoja, la clasificación coincide con ISC < 1 "
+                f"en {isc_diagnostics['coincidencias_clasificacion']:,}/"
+                f"{isc_diagnostics['clasificacion_comparable']:,} registros aplicables. "
+                "Aplicando la regla observada (universo aplicable: brecha positiva; "
+                "GPM y Sustitución-GPM: cero), Descapitalización coincide con "
+                "max(capital_necesario_sm - capital_mas_bono, 0) "
+                f"en {isc_diagnostics.get('monto_descapitalizacion_coincide', 0):,}/"
+                f"{isc_diagnostics.get('monto_descapitalizacion_comparable', 0):,} importes; "
+                "Desfinanciación coincide con max(capital_necesario_def - capital_mas_bono, 0) "
+                f"en {isc_diagnostics.get('monto_desfinanciacion_coincide', 0):,}/"
+                f"{isc_diagnostics.get('monto_desfinanciacion_comparable', 0):,}. "
+                "Esto valida los valores exportados, no el código externo que los produjo.\n\n"
+            )
+        isc_section = (
+            "\n## ISC y escenarios determinísticos por umbral\n\n"
+            "ISC = (capital_mas_bono) / capital_necesario_sm. Los escenarios seleccionan "
+            "registros del universo aplicable (se excluyen Riesgo GPM y Sustitución-GPM, "
+            "que la clasificación fuente no marca como descapitalizados) con ISC "
+            "estrictamente menor que cada umbral. No son probabilidades ni una validación "
+            "definitiva de elegibilidad. Los casos no calculables se excluyen. El capital "
+            "requerido suma valores actuariales individuales observados en la base; no es "
+            "un pasivo proyectado. Los conteos son registros, no necesariamente afiliados "
+            "únicos. El Excel contiene valores exportados, no las fórmulas del cálculo "
+            "actuarial externo; este informe no audita los supuestos de beneficiarios ni "
+            "expectativa de vida. Valide estas reglas con el área dueña del cálculo.\n\n"
+            f"Diagnóstico: {isc_diagnostics}.\n\n"
+            f"{isc_validation}"
+            f"{_table_markdown(scenario_table)}\n"
+        )
 
     categorical_sections = []
     for column in CATEGORICAL_COLUMNS:
@@ -666,6 +872,8 @@ Las variables monetarias conservan las unidades y fecha de valoración de la fue
 ### Registros usados por los histogramas financieros
 
 {_table_markdown(financial_data_quality)}
+
+{isc_section}
 
 ## Análisis de riesgo y participación
 
@@ -782,6 +990,8 @@ def build_dashboard_html(
     frame: pd.DataFrame,
     figures: dict[str, go.Figure],
     title: str = "Exploración de datos — Pensión mutualizada",
+    isc_scenarios: pd.DataFrame | None = None,
+    isc_diagnostics: dict[str, int] | None = None,
 ) -> str:
     """Genera un dashboard HTML autónomo con Plotly embebido y datos agregados."""
     kpis = calculate_kpis(frame)
@@ -810,9 +1020,16 @@ def build_dashboard_html(
         )
         sections.append(
             f'<section class="chart"><h2>{html.escape(name.replace("_", " ").capitalize())}'
-            f"</h2>{chart}{_interpretation_html(_chart_interpretation(frame, name, figure))}</section>"
+            f"</h2>{chart}{_interpretation_html(_chart_interpretation(frame, name, figure, isc_scenarios, isc_diagnostics))}</section>"
         )
     filter_panel = _dashboard_filter(frame)
+    isc_table = (
+        _isc_scenarios_html(isc_scenarios, isc_diagnostics)
+        if isc_scenarios is not None
+        and isc_diagnostics is not None
+        and not isc_scenarios.empty
+        else ""
+    )
     findings = "".join(
         f"<li>{html.escape(text)}</li>" for text in automatic_findings(frame, kpis)
     )
@@ -831,6 +1048,11 @@ def build_dashboard_html(
     .kpis {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:1rem; }}
     .kpi,.chart,.filter-panel,.summary {{ background:white; border-radius:12px; padding:1.2rem;
       border:1px solid var(--accent); box-shadow:0 2px 12px rgba(0,51,160,.08); }}
+    .table-scroll {{ overflow-x:auto; }}
+    table {{ width:100%; border-collapse:collapse; font-size:.9rem; }}
+    th,td {{ padding:.7rem; border-bottom:1px solid var(--accent); text-align:right; }}
+    th {{ color:var(--primary); background:#eef7fa; }}
+    th:first-child,td:first-child {{ text-align:left; }}
     .kpi span {{ display:block; color:var(--secondary); font-size:.9rem; }}
     .kpi strong {{ display:block; margin-top:.5rem; color:var(--dark); font-size:1.4rem; }}
     .chart,.filter-panel,.summary {{ margin-top:1.25rem; }}
@@ -853,9 +1075,10 @@ def build_dashboard_html(
 <p>Perfilamiento descriptivo inicial de afiliados y saldos. Los hallazgos no constituyen una evaluación de solvencia ni una recomendación de producto.</p></header>
 <main><section><h2>Resumen ejecutivo</h2><p>Exploración de {kpis["registros"]:,} registros y {kpis["variables"]} variables. Los gráficos se construyen sobre agregados y estadísticas resumidas; no se incluyen observaciones individuales.</p>
 <div class="kpis">{_kpi_cards(kpis)}</div></section>
+{isc_table}
 {filter_panel}
 <section class="summary"><h2>Conclusiones automáticas</h2><ul>{findings}</ul>
-<p class="note">La cobertura capital/capital necesario para 1 SM es un indicador experimental individual y no mide solvencia mutualizada.</p></section>
+<p class="note">La cobertura experimental usa capital sin Bono / capital necesario para 1 SM y toda la base; no equivale a la clasificación oficial de descapitalización ni mide solvencia mutualizada.</p></section>
 {"".join(sections)}</main>
 <footer>Reporte generado localmente. Revise permisos de uso y confidencialidad antes de compartir este archivo.</footer>
 </body></html>"""
@@ -866,12 +1089,30 @@ def write_reports(
     figures: dict[str, go.Figure],
     source_name: str,
     reports_dir: str | Path,
+    isc_scenarios: pd.DataFrame | None = None,
+    isc_diagnostics: dict[str, int] | None = None,
 ) -> tuple[Path, Path]:
     """Guarda el informe HTML interactivo y el resumen técnico Markdown."""
     output = Path(reports_dir)
     output.mkdir(parents=True, exist_ok=True)
     html_path = output / "exploracion.html"
     markdown_path = output / "exploracion.md"
-    html_path.write_text(build_dashboard_html(frame, figures), encoding="utf-8")
-    markdown_path.write_text(build_markdown_report(frame, source_name), encoding="utf-8")
+    html_path.write_text(
+        build_dashboard_html(
+            frame,
+            figures,
+            isc_scenarios=isc_scenarios,
+            isc_diagnostics=isc_diagnostics,
+        ),
+        encoding="utf-8",
+    )
+    markdown_path.write_text(
+        build_markdown_report(
+            frame,
+            source_name,
+            isc_scenarios=isc_scenarios,
+            isc_diagnostics=isc_diagnostics,
+        ),
+        encoding="utf-8",
+    )
     return html_path, markdown_path

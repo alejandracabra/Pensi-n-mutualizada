@@ -378,6 +378,129 @@ def distribution_figures(
     return figures
 
 
+def financial_status_histograms(
+    frame: pd.DataFrame,
+    capital_column: str = "capital",
+    status_columns: Iterable[str] = ("descapitalizado", "desfinanciado"),
+    bins: int = 20,
+    minimum_count: int = 10,
+) -> dict[str, go.Figure]:
+    """Compara capital disponible por estado financiero en intervalos compartidos.
+
+    Los intervalos contiguos se combinan hasta que cada categoría mostrada tenga
+    al menos ``minimum_count`` registros por intervalo. Capitales faltantes se
+    excluyen; estados faltantes se conservan como una categoría explícita.
+    """
+    if capital_column not in frame or bins < 1 or minimum_count < 1:
+        return {}
+
+    capital = pd.to_numeric(frame[capital_column], errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
+    )
+    valid_capital = capital.notna()
+    if int(valid_capital.sum()) < minimum_count:
+        return {}
+
+    values = capital.loc[valid_capital].astype(float)
+    lower, upper = values.quantile([0.01, 0.99]).to_numpy()
+    if lower >= upper:
+        lower, upper = float(values.min()), float(values.max())
+
+    figures: dict[str, go.Figure] = {}
+    for status_column in status_columns:
+        if status_column not in frame:
+            continue
+
+        statuses = frame.loc[valid_capital, status_column].astype("string").fillna("Sin dato")
+        status_counts = statuses.value_counts()
+        small_statuses = status_counts[status_counts < minimum_count].index
+        statuses = statuses.where(
+            ~statuses.isin(small_statuses), "Otros / grupos pequeños"
+        )
+        categories = sorted(statuses.unique().tolist())
+        if not categories or len(values) < minimum_count * len(categories):
+            continue
+
+        bin_count = min(
+            bins,
+            max(1, len(values) // (minimum_count * len(categories))),
+        )
+        edges = np.linspace(lower, upper, bin_count + 1)
+        grouped_bins: list[tuple[float, float, list[int]]] = []
+        pending_counts = np.zeros(len(categories), dtype=int)
+        pending_start = float(edges[0])
+
+        for index in range(bin_count):
+            in_bin = (values >= edges[index]) & (
+                values <= edges[index + 1]
+                if index == bin_count - 1
+                else values < edges[index + 1]
+            )
+            if index == 0:
+                in_bin |= values < lower
+            if index == bin_count - 1:
+                in_bin |= values > upper
+            counts = statuses.loc[in_bin].value_counts().reindex(categories, fill_value=0)
+            pending_counts += counts.to_numpy(dtype=int)
+            if (pending_counts >= minimum_count).all():
+                grouped_bins.append(
+                    (pending_start, float(edges[index + 1]), pending_counts.tolist())
+                )
+                pending_start = float(edges[index + 1])
+                pending_counts = np.zeros(len(categories), dtype=int)
+
+        if pending_counts.any():
+            if grouped_bins:
+                start, _, prior_counts = grouped_bins[-1]
+                grouped_bins[-1] = (
+                    start,
+                    float(edges[-1]),
+                    (np.asarray(prior_counts) + pending_counts).tolist(),
+                )
+            else:
+                grouped_bins.append(
+                    (float(edges[0]), float(edges[-1]), pending_counts.tolist())
+                )
+
+        labels = []
+        for index, (start, end, _) in enumerate(grouped_bins):
+            start_label = "≤ P1" if index == 0 and values.min() < lower else _format_millions(start)
+            end_label = "≥ P99" if index == len(grouped_bins) - 1 and values.max() > upper else _format_millions(end)
+            labels.append(f"{start_label} – {end_label}")
+
+        figure = go.Figure()
+        for category_index, category in enumerate(categories):
+            counts = [counts[category_index] for _, _, counts in grouped_bins]
+            total = int(statuses.eq(category).sum())
+            percentages = [count / total * 100 for count in counts]
+            figure.add_trace(
+                go.Bar(
+                    x=labels,
+                    y=counts,
+                    name=str(category),
+                    marker_color=SURA_PRIMARY if category_index == 0 else SURA_SECONDARY,
+                    customdata=percentages,
+                    hovertemplate=(
+                        f"{status_column}: {category}<br>Capital disponible: %{{x}}"
+                        "<br>Registros: %{y:,}<br>Participación del estado: "
+                        "%{customdata:.1f}%<extra></extra>"
+                    ),
+                )
+            )
+
+        figure.update_layout(
+            title=f"Distribución del capital disponible por {status_column.replace('_', ' ')}",
+            xaxis_title="Capital disponible (millones de pesos; intervalos lineales)",
+            yaxis_title="Registros",
+            barmode="group",
+            template=PLOTLY_TEMPLATE,
+            legend_title=status_column.replace("_", " ").capitalize(),
+        )
+        figures[f"capital_por_{status_column}"] = figure
+
+    return figures
+
+
 def completeness_figures(frame: pd.DataFrame) -> dict[str, go.Figure]:
     """Genera completitud por variable y co-ocurrencia agregada de nulos."""
     missing = frame.isna().mean().mul(100).sort_values(ascending=True)
