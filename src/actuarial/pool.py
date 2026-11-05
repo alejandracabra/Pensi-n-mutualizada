@@ -203,5 +203,9 @@ def project_monthly_pool(valuation: CohortValuation, annual_return: float = 0.02
         unpaid_total=float(projection.cumulative_unpaid.iloc[-1]),
         remaining_expected_survivors=float(projection.expected_survivors.iloc[-1]),
         terminal_pending=valuation.terminal_pending,
+        obligations_after_horizon_vpa=float('nan') if valuation.terminal_pending else 0.0,
+        remaining_beneficiary_survival_sum=sum(v.remaining_beneficiary_survival for v in valuation.individuals.values()),
+        terminal_diagnosis=('VPA truncado: quedan vidas con derechos potenciales; cola no valorada'
+            if valuation.terminal_pending else 'Sin derechos futuros identificados bajo las hipótesis'),
         horizon_months=len(flows))
     return MonthlyPoolResult(projection, summary)

@@ -134,3 +134,11 @@ Antes de utilizar datos reales se necesita autorización y un entorno aprobado, 
 La interfaz de retiro programado lanza `NotImplementedError` hasta contar con fórmulas de recálculo, periodicidad, tabla/tasa técnica, beneficiarios, garantías, comisiones, rendimientos y reglas de agotamiento/fallecimiento. No se calcula una comparación falsa.
 
 Permanecen pendientes calibración actuarial, dependencia y mejoras de mortalidad, múltiples beneficiarios, reglas institucionales de prestaciones y administración, cola vitalicia, incertidumbre, selección voluntaria/adversa y revisión jurídica/regulatoria. Primero validar esta estructura determinística y sus convenciones; Monte Carlo no se implementa todavía.
+
+## Auditoría e integración segura (fase 3)
+
+La [adaptación controlada](adaptacion_datos.md) incorpora catálogo único, lectura local de solo lectura, diagnósticos de preparación y bloqueo de cohortes incompletas. La clasificación ISC conserva su definición; un catálogo personalizado ya no se pierde al recalcular universos/gráficas. Beneficiarios no informados no se consideran inexistentes.
+
+Los conceptos financieros se mantienen separados: activos iniciales; VPA dentro del horizonte; brecha inicial `max(L0-F0,0)`; reserva prospectiva truncada; faltante mensual de caja; aportes de garantía; VPA de aportes; cola no valorada. La suma de aportes no es reserva matemática ni capital regulatorio. Descuento valora obligaciones y rentabilidad proyecta activos: no se acoplan. Se añadió una sensibilidad de descuento con las demás hipótesis fijas.
+
+El diagnóstico terminal conserva supervivientes y derechos potenciales. `obligations_after_horizon_vpa` es NaN si la cola no está valorada, nunca cero por desconocimiento. El ejecutivo ahora presenta ocho secciones y una fila por cohorte en el régimen de referencia sin respaldo; los 18 casos base de regímenes permanecen en el técnico. Las salidas no sintéticas de esta ruta están bloqueadas por defecto y requieren la política de revisión/supresión descrita en la documentación de adaptación.

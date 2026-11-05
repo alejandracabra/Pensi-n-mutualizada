@@ -8,6 +8,8 @@ from src.visualization.palette import SURA_PRIMARY, SURA_SECONDARY, SURA_ACCENT,
 
 
 def export_figures(analysis: dict, output: Path) -> dict[str, Path]:
+    if analysis.get('parameters',{}).get('synthetic') is not True:
+        raise PermissionError('Exportación no sintética desactivada por defecto')
     output = Path(output)
     output.mkdir(parents=True,exist_ok=True)
     artifacts = {}
@@ -65,7 +67,7 @@ def export_figures(analysis: dict, output: Path) -> dict[str, Path]:
     ax.set_xlabel('Mes'); ax.legend(frameon=False); save(fig,'06_respaldo')
     sensitivity=analysis['sensitivity'].query("cohort == 'A' and regime == 'guarantee'")
     labels={'base':'Base','menor_mortalidad':'Menor mortalidad','rentabilidad_negativa':'Rendimiento negativo',
-            'mayor_indexacion':'Mayor indexación','mayores_gastos':'Mayores gastos'}
+            'mayor_indexacion':'Mayor indexación','mayores_gastos':'Mayores gastos','mayor_descuento':'Mayor descuento'}
     fig,ax=canvas('Sensibilidad del VPA del respaldo A','Unidades abstractas descontadas')
     ax.barh([labels[s] for s in sensitivity.scenario],sensitivity.external_support_pv,color=SURA_PRIMARY)
     ax.invert_yaxis(); save(fig,'07_sensibilidad')

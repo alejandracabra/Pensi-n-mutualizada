@@ -133,3 +133,14 @@ python -m unittest discover -s tests -v
 ```
 
 Los HTML técnico/ejecutivo y las siete figuras PNG/SVG se generan en `reports/outputs/integracion_sintetica/`, excluido de Git. Son exclusivamente datos sintéticos, sin mortalidad calibrada ni beneficiarios individuales en la demostración. Se conserva el piloto anual histórico; el flujo recomendado para fase 2 es el comando integrado. No constituye evaluación favorable de viabilidad ni autorización de producto.
+
+## Fase 3: adaptación local segura y auditoría
+
+Ver [variables, configuración, validación y privacidad](docs/adaptacion_datos.md). El ejemplo solo usa fuentes sintéticas incompletas; no se necesita ni se solicita una base corporativa. Las configuraciones locales autorizadas se guardan fuera del repositorio. Las cohortes incompletas se bloquean por defecto; la ejecución parcial exige una opción explícita y conciliación.
+
+```powershell
+python -m src.simulation.adaptation_demo
+python -m unittest discover -s tests -v
+```
+
+La demo guarda exclusivamente agregados en un directorio nuevo de `reports/outputs/fase3_sintetica/`, excluido de Git. No escribe en `data/raw` ni sobrescribe su directorio previo. [Validación fase 3](docs/validacion_fase3.md) documenta resultados sintéticos, pruebas y límites del entorno. No hay autorización implícita para valorar o divulgar datos reales, ni conclusión de viabilidad.

@@ -20,30 +20,33 @@ from src.visualization.palette import (
 )
 
 DEFAULT_ISC_THRESHOLDS = (1.00, 1.05, 1.10, 1.15, 1.20)
-ISC_REQUIRED_COLUMNS = ("capital_mas_bono", "capital_necesario_sm", "edad", "riesgo")
-NON_APPLICABLE_RISKS = frozenset({"GPM", "SUSTITUCION - GPM"})
-# Catálogo operativo provisional y configurable; no definición institucional.
-DEFAULT_KNOWN_RISKS = frozenset({"VEJEZ", "INVALIDEZ", "SOBREVIVENCIA", "SUSTITUCION"})
+ISC_REQUIRED_COLUMNS = ("capital_mas_bono", "capital_necesario_sm", "riesgo")
+from src.data.risk_catalog import (RiskCatalog, DEFAULT_CATALOG, PROVISIONAL_RISKS,
+    EXCLUDED_RISKS, normalize_risk)
+NON_APPLICABLE_RISKS = EXCLUDED_RISKS
+DEFAULT_KNOWN_RISKS = PROVISIONAL_RISKS
 
 
-def normalize_risk(value: object) -> str:
-    """Unifica tildes, espacios y variantes Unicode de guiones."""
-    if pd.isna(value):
-        return ""
-    text = unicodedata.normalize("NFKD", str(value).upper())
-    text = "".join(c for c in text if not unicodedata.combining(c))
-    text = re.sub(r"[‐‑‒–—−-]+", " - ", text)
-    return " ".join(text.split())
+def _catalog_for(frame, catalog=None, known_risks=None):
+    if catalog is not None and known_risks is not None:
+        raise ValueError("Especifique catálogo o known_risks, no ambos")
+    if known_risks is not None:
+        # API histórica: las exclusiones obligatorias nunca se reactivan.
+        catalog=RiskCatalog(tuple((v,True) for v in sorted({normalize_risk(v) for v in known_risks}-EXCLUDED_RISKS-{''})))
+    return catalog or frame.attrs.get('risk_catalog') or DEFAULT_CATALOG
 
 
+def classified_isc(frame, catalog=None):
+    """Recalcula únicamente con el catálogo adjunto; rechaza cambios implícitos."""
+    previous=frame.attrs.get('risk_catalog')
+    if previous is not None and catalog is not None and previous.fingerprint != catalog.fingerprint:
+        raise ValueError("Catálogo distinto: reclasifique explícitamente con calculate_isc")
+    return calculate_isc(frame,catalog=catalog)
 
-def calculate_isc(frame: pd.DataFrame, known_risks: Sequence[str] = DEFAULT_KNOWN_RISKS) -> pd.DataFrame:
-    """Calcula ISC = (capital + bono) / capital necesario para 1 SM.
 
-    El cociente se calcula cuando ambos importes son válidos y el denominador
-    es positivo. La clasificación derivada solo aplica al universo en que la
-    fuente reporta descapitalización; GPM y Sustitución-GPM se marcan no aplicables.
-    """
+def calculate_isc(frame: pd.DataFrame, known_risks=None, *, catalog: RiskCatalog | None = None) -> pd.DataFrame:
+    """ISC financiero con catálogo explícito o heredado, nunca inferido de los datos."""
+    catalog=_catalog_for(frame,catalog,known_risks)
     missing_columns = [column for column in ISC_REQUIRED_COLUMNS if column not in frame]
     if missing_columns:
         raise ValueError(
@@ -58,15 +61,17 @@ def calculate_isc(frame: pd.DataFrame, known_risks: Sequence[str] = DEFAULT_KNOW
     required = pd.to_numeric(
         result["capital_necesario_sm"], errors="coerce"
     ).replace([np.inf, -np.inf], np.nan)
-    age = pd.to_numeric(result["edad"], errors="coerce").replace(
+    age = pd.to_numeric(result.get("edad", pd.Series(np.nan,index=result.index)), errors="coerce").replace(
         [np.inf, -np.inf], np.nan
     )
-    risk = result["riesgo"].map(normalize_risk)
-    known = {normalize_risk(v) for v in known_risks} - NON_APPLICABLE_RISKS - {""}
-    applicable = risk.isin(known)
+    classified=[catalog.classify(value) for value in result["riesgo"]]
+    risk=pd.Series([v[0] for v in classified],index=result.index,dtype='string')
+    status=pd.Series([v[1] for v in classified],index=result.index,dtype='string')
+    applicable=status.eq('applicable')
     result["riesgo_normalizado"] = risk
-    result["riesgo_desconocido"] = ~risk.isin(known | NON_APPLICABLE_RISKS | {""})
-    result["riesgo_faltante"] = risk.eq("")
+    result["riesgo_estado"] = status
+    result["riesgo_desconocido"] = status.eq('unknown')
+    result["riesgo_faltante"] = status.eq('missing')
     result["capital_negativo"] = capital.lt(0)
     result["capital_invalido"] = capital.isna() | capital.lt(0)
     result["denominador_invalido"] = required.isna() | required.le(0)
@@ -81,14 +86,17 @@ def calculate_isc(frame: pd.DataFrame, known_risks: Sequence[str] = DEFAULT_KNOW
     result["descapitalizada_calc"] = (
         isc.lt(1).where(isc.notna() & applicable).astype("boolean")
     )
+    result.attrs["risk_catalog"]=catalog
     return result
 
 
 def calculate_eligibility_scenarios(
     frame: pd.DataFrame,
     thresholds: Sequence[float] = DEFAULT_ISC_THRESHOLDS,
+    *, catalog: RiskCatalog | None = None,
 ) -> pd.DataFrame:
     """Resume registros candidatos con ISC bajo cada umbral en el universo aplicable."""
+    frame=classified_isc(frame,catalog)
     if "ISC" not in frame:
         raise ValueError("Calcule primero el ISC con calculate_isc().")
     required_columns = {"capital_mas_bono", "capital_necesario_sm", "edad", "isc_aplicable"}
@@ -161,8 +169,9 @@ def calculate_eligibility_scenarios(
     return pd.DataFrame(rows)
 
 
-def isc_data_quality(frame: pd.DataFrame) -> dict[str, int]:
+def isc_data_quality(frame: pd.DataFrame, *, catalog: RiskCatalog | None = None) -> dict[str, int]:
     """Resume ISC calculable, universo aplicable y reproducción de la bandera fuente."""
+    frame=classified_isc(frame,catalog)
     if "ISC" not in frame:
         raise ValueError("Calcule primero el ISC con calculate_isc().")
 
@@ -244,9 +253,9 @@ def isc_data_quality(frame: pd.DataFrame) -> dict[str, int]:
     return diagnostics
 
 
-def isc_universe_summary(frame: pd.DataFrame) -> pd.DataFrame:
+def isc_universe_summary(frame: pd.DataFrame, *, catalog: RiskCatalog | None = None) -> pd.DataFrame:
     """Partición exhaustiva: no aplicable, no calculable, ISC < 1, ISC >= 1."""
-    calculated = calculate_isc(frame)
+    calculated = classified_isc(frame,catalog)
     applicable = calculated["isc_aplicable"]
     valid = calculated["ISC"].notna()
     masks = {
@@ -278,7 +287,7 @@ def eligibility_figures(scenarios: pd.DataFrame) -> dict[str, go.Figure]:
     return {"isc_escenarios_registros": counts, "isc_escenarios_capital": capital}
 
 
-def build_isc_cohorts(frame: pd.DataFrame, known_risks: Sequence[str] = DEFAULT_KNOWN_RISKS) -> dict[str, pd.DataFrame]:
+def build_isc_cohorts(frame: pd.DataFrame, known_risks=None, *, catalog: RiskCatalog | None = None) -> dict[str, pd.DataFrame]:
     """A–E acumulativas; adicional [1,1.2). No determina elegibilidad.
 
     Registro debe identificar una persona/observación sin duplicados; si no
@@ -289,7 +298,8 @@ def build_isc_cohorts(frame: pd.DataFrame, known_risks: Sequence[str] = DEFAULT_
             raise ValueError("registro faltante o duplicado: resolver unidad de análisis")
     elif not frame.index.is_unique:
         raise ValueError("Índice duplicado: resolver unidad de análisis")
-    calculated = calculate_isc(frame, known_risks)
+    catalog=_catalog_for(frame,catalog,known_risks)
+    calculated = classified_isc(frame,catalog)
     valid = calculated["isc_aplicable"] & calculated["ISC"].notna()
     groups = {name: calculated.loc[valid & calculated["ISC"].lt(t)].copy()
               for name, t in zip("ABCDE", DEFAULT_ISC_THRESHOLDS)}
@@ -307,4 +317,38 @@ def describe_isc_cohorts(cohorts: dict[str, pd.DataFrame]) -> pd.DataFrame:
             for stat in ("count", "mean", "median", "min", "max", "sum"):
                 row[f"{col}_{stat}"] = getattr(values, stat)()
         rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def reconcile_isc(frame: pd.DataFrame, *, catalog: RiskCatalog | None = None) -> pd.DataFrame:
+    """Indicadores jerárquicos: solo los cuatro estados de riesgo son partición."""
+    frame=classified_isc(frame,catalog)
+    applicable=frame.isc_aplicable
+    valid=frame.ISC.notna()
+    counts={
+        'total':len(frame),
+        'excluded_by_rule':int(frame.riesgo_estado.eq('excluded').sum()),
+        'unknown_risk':int(frame.riesgo_estado.eq('unknown').sum()),
+        'missing_risk':int(frame.riesgo_estado.eq('missing').sum()),
+        'applicable':int(applicable.sum()),
+        'applicable_calculable':int((applicable & valid).sum()),
+        'applicable_not_calculable':int((applicable & ~valid).sum()),
+        'isc_below_one':int((applicable & valid & frame.ISC.lt(1)).sum()),
+        'isc_at_least_one':int((applicable & valid & frame.ISC.ge(1)).sum())}
+    assert counts['total']==sum(counts[k] for k in ('excluded_by_rule','unknown_risk','missing_risk','applicable'))
+    assert counts['applicable']==counts['applicable_calculable']+counts['applicable_not_calculable']
+    assert counts['applicable_calculable']==counts['isc_below_one']+counts['isc_at_least_one']
+    return pd.DataFrame({'indicator':list(counts),'records':list(counts.values())})
+
+
+def compare_historical_counts(frame: pd.DataFrame, expected: dict) -> pd.DataFrame:
+    """Referencias suministradas por el usuario, jamás constantes de clasificación."""
+    actual=reconcile_isc(frame).set_index('indicator').records
+    rows=[]
+    for key,value in expected.items():
+        if key not in actual or not isinstance(value,int) or value<0:
+            raise ValueError('Referencia histórica inválida')
+        observed=int(actual[key])
+        rows.append(dict(indicator=key,expected=value,observed=observed,difference=observed-value,
+            alert=observed!=value,diagnosis='Revisar catálogo/versiones, faltantes, calidad y unidad de análisis' if observed!=value else 'Coincide'))
     return pd.DataFrame(rows)

@@ -90,13 +90,32 @@ def find_workbook(
 def load_workbook(
     path: str | Path | None = None,
     sheet_name: str | int = 0,
+    *, normalize: bool = True,
 ) -> pd.DataFrame:
     """Carga la hoja solicitada del Excel y devuelve encabezados normalizados."""
     workbook_path = Path(path) if path is not None else find_workbook()
     if not workbook_path.is_file():
         raise FileNotFoundError(f"No existe el archivo de datos: {workbook_path}")
 
-    frame = pd.read_excel(workbook_path, sheet_name=sheet_name, engine="openpyxl")
+    from io import BytesIO
+    with workbook_path.open('rb') as stream:
+        payload=stream.read()
+    frame = pd.read_excel(BytesIO(payload), sheet_name=sheet_name, engine="openpyxl")
+    # Pandas renombra duplicados Excel; revisar cabecera bruta antes de aceptar.
+    import openpyxl
+    book=openpyxl.load_workbook(BytesIO(payload),read_only=True,data_only=True)
+    try:
+        sheet=book.worksheets[sheet_name] if isinstance(sheet_name,int) else book[sheet_name]
+        iterator=sheet.iter_rows(min_row=1,max_row=1,values_only=True)
+        try:
+            headers=next(iterator,())
+        finally:
+            iterator.close()
+        meaningful=[v for v in headers if v is not None]
+        if len(meaningful)!=len(set(meaningful)):
+            raise ValueError('Encabezados duplicados en archivo fuente')
+    finally:
+        book.close()
     if frame.empty:
         raise ValueError(f"La hoja {sheet_name!r} de {workbook_path.name} no contiene registros.")
-    return normalize_columns(frame)
+    return normalize_columns(frame) if normalize else frame

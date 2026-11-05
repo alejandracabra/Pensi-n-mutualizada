@@ -73,3 +73,10 @@ reports/exploracion_ejecutiva.html
 !.env.example
 secrets.*
 credentials.*
+
+# Solo ejemplos sintéticos de configuración se versionan
+config/*
+!config/*.example.yaml
+*.local.yaml
+*.local.yml
+*.local.json

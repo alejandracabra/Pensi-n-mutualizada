@@ -75,7 +75,8 @@ def run_analysis() -> dict:
         ('menor_mortalidad',synthetic_mortality(.7),assumptions,.02,.7),
         ('rentabilidad_negativa',mortality,assumptions,-.01,1.0),
         ('mayor_indexacion',mortality,replace(assumptions,annual_indexation=.04),.02,1.0),
-        ('mayores_gastos',mortality,replace(assumptions,expense_fraction=.08),.02,1.0)]
+        ('mayores_gastos',mortality,replace(assumptions,expense_fraction=.08),.02,1.0),
+        ('mayor_descuento',mortality,replace(assumptions,annual_discount=.05),.02,1.0)]
     for name, table, parameters, ret, multiplier in cases:
         summary,_ = compare_cohorts(frame,table,parameters,ret,name)
         sensitivity.append(summary)

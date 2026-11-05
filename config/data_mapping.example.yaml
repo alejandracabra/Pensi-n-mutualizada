@@ -1,0 +1,19 @@
+# Ejemplo sintético, NO configuración institucional. Copiar fuera del repositorio.
+columns:
+  Capital +Bono: capital_mas_bono
+  Edad: edad
+  Riesgo: riesgo
+valuation_date: '2026-11-05'
+date_format: '%Y-%m-%d'
+source_currency: ABSTRACT
+model_currency: ABSTRACT
+prices_date: '2026-11-05'
+amount_multiplier: 1.0
+observation_unit: pensionado
+sex_codes:
+  F: F
+  M: M
+allow_unisex: false
+benefit_mode: provided
+benefit_value: null
+benefit_date: null

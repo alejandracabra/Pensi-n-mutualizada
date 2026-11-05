@@ -1,0 +1,12 @@
+# Ejemplo PROVISIONAL. No constituye catálogo institucional validado.
+version: provisional-v1
+provisional: true
+categories:
+  VEJEZ: true
+  INVALIDEZ: true
+  SOBREVIVENCIA: true
+  SUSTITUCION: true
+  GPM: false
+  SUSTITUCION - GPM: false
+aliases:
+  VEJEZ EJEMPLO: VEJEZ
