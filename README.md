@@ -122,3 +122,14 @@ Estructura inicial del proyecto. La estimación de mortalidad, el modelo mutuali
 ## Piloto sintético de mutualización
 
 Ver [revisión inicial](docs/revision_inicial.md) y [supuestos, límites y ejecución](docs/piloto_mutualizacion.md). Ejecutar `python -m src.simulation.pilot` desde la raíz. No utiliza datos reales ni concluye viabilidad.
+
+## Integración mensual actuarial y financiera (fase 2)
+
+La segunda fase conecta selección ISC, VPA/RAC individual y bolsa mensual heterogénea, compara regímenes sin respaldo, garantía hipotética y prestaciones variables, y exporta reportes y figuras agregadas. Ver [metodología y ejecución](docs/integracion_actuarial.md).
+
+```powershell
+python -m src.simulation.integrated
+python -m unittest discover -s tests -v
+```
+
+Los HTML técnico/ejecutivo y las siete figuras PNG/SVG se generan en `reports/outputs/integracion_sintetica/`, excluido de Git. Son exclusivamente datos sintéticos, sin mortalidad calibrada ni beneficiarios individuales en la demostración. Se conserva el piloto anual histórico; el flujo recomendado para fase 2 es el comando integrado. No constituye evaluación favorable de viabilidad ni autorización de producto.

@@ -1,5 +1,7 @@
 # Piloto determinístico sintético
 
+> Documento histórico de fase 1. La fase 2 corrige el tratamiento de capitales negativos y riesgos desconocidos e incorpora valoración individual, mortalidad configurable y bolsa mensual. Ver [integración actuarial](integracion_actuarial.md).
+
 ## Alcance y supuestos
 
 Este ejercicio prueba mecánica financiera; no evalúa viabilidad de Protección. Todas las cifras por defecto son ficticias, en unidades monetarias abstractas, y están etiquetadas como sintéticas. No lee Excel ni selecciona pensionados reales.

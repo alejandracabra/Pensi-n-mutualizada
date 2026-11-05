@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import re
+import unicodedata
 
 import numpy as np
 import pandas as pd
@@ -20,9 +22,22 @@ from src.visualization.palette import (
 DEFAULT_ISC_THRESHOLDS = (1.00, 1.05, 1.10, 1.15, 1.20)
 ISC_REQUIRED_COLUMNS = ("capital_mas_bono", "capital_necesario_sm", "edad", "riesgo")
 NON_APPLICABLE_RISKS = frozenset({"GPM", "SUSTITUCION - GPM"})
+# Catálogo operativo provisional y configurable; no definición institucional.
+DEFAULT_KNOWN_RISKS = frozenset({"VEJEZ", "INVALIDEZ", "SOBREVIVENCIA", "SUSTITUCION"})
 
 
-def calculate_isc(frame: pd.DataFrame) -> pd.DataFrame:
+def normalize_risk(value: object) -> str:
+    """Unifica tildes, espacios y variantes Unicode de guiones."""
+    if pd.isna(value):
+        return ""
+    text = unicodedata.normalize("NFKD", str(value).upper())
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = re.sub(r"[‐‑‒–—−-]+", " - ", text)
+    return " ".join(text.split())
+
+
+
+def calculate_isc(frame: pd.DataFrame, known_risks: Sequence[str] = DEFAULT_KNOWN_RISKS) -> pd.DataFrame:
     """Calcula ISC = (capital + bono) / capital necesario para 1 SM.
 
     El cociente se calcula cuando ambos importes son válidos y el denominador
@@ -46,11 +61,18 @@ def calculate_isc(frame: pd.DataFrame) -> pd.DataFrame:
     age = pd.to_numeric(result["edad"], errors="coerce").replace(
         [np.inf, -np.inf], np.nan
     )
-    risk = result["riesgo"].astype("string").str.strip().str.upper()
-    applicable = ~risk.isin(NON_APPLICABLE_RISKS) & risk.notna()
-
-    valid_denominator = required.where(required > 0)
-    isc = capital.div(valid_denominator).replace([np.inf, -np.inf], np.nan)
+    risk = result["riesgo"].map(normalize_risk)
+    known = {normalize_risk(v) for v in known_risks} - NON_APPLICABLE_RISKS - {""}
+    applicable = risk.isin(known)
+    result["riesgo_normalizado"] = risk
+    result["riesgo_desconocido"] = ~risk.isin(known | NON_APPLICABLE_RISKS | {""})
+    result["riesgo_faltante"] = risk.eq("")
+    result["capital_negativo"] = capital.lt(0)
+    result["capital_invalido"] = capital.isna() | capital.lt(0)
+    result["denominador_invalido"] = required.isna() | required.le(0)
+    result["edad_invalida"] = age.isna() | ~age.between(0, 120)
+    result["ISC_bruto"] = capital.div(required.where(required > 0)).replace([np.inf, -np.inf], np.nan)
+    isc = result["ISC_bruto"].where(~result["capital_invalido"])
     result["capital_mas_bono"] = capital
     result["capital_necesario_sm"] = required
     result["edad"] = age
@@ -163,6 +185,10 @@ def isc_data_quality(frame: pd.DataFrame) -> dict[str, int]:
         "capital_mas_bono_faltante_o_invalido": int(capital.isna().sum()),
         "capital_sm_faltante_o_invalido": int(required.isna().sum()),
         "capital_sm_no_positivo": int(required.le(0).sum()),
+        "capital_negativo": int(capital.lt(0).sum()),
+        "riesgo_desconocido": int(frame.get("riesgo_desconocido", pd.Series(False, index=frame.index)).sum()),
+        "riesgo_faltante": int(frame.get("riesgo_faltante", pd.Series(False, index=frame.index)).sum()),
+        "aplicable_calculable": int((applicable & isc.notna()).sum()),
     }
     if "descapitalizacion" in frame:
         observed_source = pd.to_numeric(frame["descapitalizacion"], errors="coerce").replace([np.inf, -np.inf], np.nan)
@@ -250,3 +276,35 @@ def eligibility_figures(scenarios: pd.DataFrame) -> dict[str, go.Figure]:
         xaxis_title="ISC estrictamente menor que el umbral", yaxis_title="Billones de unidades monetarias de la fuente",
         barmode="group", template=PLOTLY_TEMPLATE)
     return {"isc_escenarios_registros": counts, "isc_escenarios_capital": capital}
+
+
+def build_isc_cohorts(frame: pd.DataFrame, known_risks: Sequence[str] = DEFAULT_KNOWN_RISKS) -> dict[str, pd.DataFrame]:
+    """A–E acumulativas; adicional [1,1.2). No determina elegibilidad.
+
+    Registro debe identificar una persona/observación sin duplicados; si no
+    existe se exige índice único. No deduplica ni elige arbitrariamente saldos.
+    """
+    if "registro" in frame:
+        if frame["registro"].isna().any() or frame["registro"].duplicated().any():
+            raise ValueError("registro faltante o duplicado: resolver unidad de análisis")
+    elif not frame.index.is_unique:
+        raise ValueError("Índice duplicado: resolver unidad de análisis")
+    calculated = calculate_isc(frame, known_risks)
+    valid = calculated["isc_aplicable"] & calculated["ISC"].notna()
+    groups = {name: calculated.loc[valid & calculated["ISC"].lt(t)].copy()
+              for name, t in zip("ABCDE", DEFAULT_ISC_THRESHOLDS)}
+    groups["adicional"] = calculated.loc[valid & calculated["ISC"].ge(1) & calculated["ISC"].lt(1.2)].copy()
+    return groups
+
+
+def describe_isc_cohorts(cohorts: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Estadísticas de registros sin exportar observaciones individuales."""
+    rows = []
+    for name, frame in cohorts.items():
+        row = {"cohort": name, "records": len(frame), "kind": "excluyente respecto A" if name == "adicional" else "acumulativa"}
+        for col in ("edad", "capital_mas_bono", "capital_necesario_sm"):
+            values = pd.to_numeric(frame[col], errors="coerce")
+            for stat in ("count", "mean", "median", "min", "max", "sum"):
+                row[f"{col}_{stat}"] = getattr(values, stat)()
+        rows.append(row)
+    return pd.DataFrame(rows)

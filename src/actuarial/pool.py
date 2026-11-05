@@ -1,5 +1,8 @@
 """Bolsa cerrada determinística de demostración. Sin calibración corporativa."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import numpy as np
+from src.actuarial.liabilities import (LiabilityAssumptions,
+    Mortality, value_individual, projection_months, finite)
 import math
 import pandas as pd
 
@@ -69,3 +72,136 @@ def project_pool(demographic=DemographicParameters(), financial=FinancialParamet
             unpaid_benefits=benefit_due-paid, unpaid_expenses=expense_due-expenses,
             payment_ratio=factor, synthetic=True))
     return pd.DataFrame(rows)
+
+
+# La API anual project_pool se conserva como regresión del piloto histórico.
+# La integración de fase 2 utiliza exclusivamente esta API mensual.
+
+
+@dataclass
+class CohortValuation:
+    """Detalle individual solo en memoria; exportaciones exclusivamente agregadas."""
+    initial_capital: float
+    initial_liability: float
+    initial_coverage: float
+    individuals: dict
+    flows: pd.DataFrame
+    assumptions: LiabilityAssumptions
+    terminal_pending: bool
+
+
+def value_cohort(participants: pd.DataFrame, mortality: Mortality,
+                 assumptions: LiabilityAssumptions = LiabilityAssumptions(),
+                 beneficiaries: dict | None = None) -> CohortValuation:
+    """Una fila por participante, registro único, capital y prestación individuales.
+
+    beneficiaries=None declara explícitamente una hipótesis sin beneficiarios;
+    no infiere su ausencia a partir de campos corporativos faltantes.
+    """
+    columns = {"registro", "edad", "sexo", "capital_mas_bono", "prestacion_mensual"}
+    if not columns.issubset(participants):
+        raise ValueError(f"Faltan variables para valorar: {sorted(columns-set(participants))}")
+    if participants.registro.isna().any() or participants.registro.duplicated().any():
+        raise ValueError("registro faltante/duplicado")
+    if participants.sexo.isna().any():
+        raise ValueError("sexo faltante: declarar unisex explícitamente si corresponde")
+    beneficiaries = {} if beneficiaries is None else beneficiaries
+    if not set(beneficiaries).issubset(set(participants.registro)):
+        raise ValueError("Beneficiarios sin titular en la cohorte")
+    assumptions.validate()
+    months = assumptions.horizon_months
+    if months is None:
+        months = max((projection_months(finite(row.edad, "edad", 0), assumptions,
+                      beneficiaries.get(row.registro)) for row in participants.itertuples()), default=1)
+    common = replace(assumptions, horizon_months=months)
+    individuals = {}
+    for row in participants.itertuples():
+        individuals[row.registro] = value_individual(row.edad, str(row.sexo),
+            row.capital_mas_bono, row.prestacion_mensual, mortality, common,
+            beneficiaries.get(row.registro))
+    flows = pd.DataFrame({"month": np.arange(1, months+1)})
+    for column in ("benefit_due", "expense_due", "principal_survival_start", "principal_survival_end",
+                   "beneficiary_benefit_due"):
+        flows[column] = sum((v.flows[column].to_numpy() for v in individuals.values()), np.zeros(months))
+    capital = float(pd.to_numeric(participants.capital_mas_bono, errors="raise").sum())
+    liability = sum(v.present_value for v in individuals.values())
+    finite(capital, "capital agregado", 0)
+    finite(liability, "VPA agregado", 0)
+    return CohortValuation(capital, liability, capital/liability if liability > 0 else float("nan"),
+        individuals, flows, common, any(v.terminal_pending for v in individuals.values()))
+
+
+@dataclass
+class MonthlyPoolResult:
+    projection: pd.DataFrame
+    summary: dict
+
+
+def project_monthly_pool(valuation: CohortValuation, annual_return: float = 0.02,
+                         regime: str = "no_support") -> MonthlyPoolResult:
+    """Sin respaldo, garantía hipotética o prestación variable identificada.
+
+    Mismo devengo, gastos, descuento e indexación que la valoración. Las
+    insuficiencias sin garantía se prorratean entre pagos y gastos. Se mantiene
+    un registro nominal acumulado de impagos sin intereses; no se vuelve a
+    solicitar su pago en periodos posteriores. Reserva solo del horizonte.
+    """
+    if regime not in {"no_support", "guarantee", "variable"}:
+        raise ValueError("Régimen desconocido")
+    annual_return = finite(annual_return, "rentabilidad")
+    if annual_return <= -1:
+        raise ValueError("Rentabilidad debe superar -1")
+    monthly_return = math.expm1(math.log1p(annual_return)/12)
+    discount = (1+valuation.assumptions.annual_discount)**(1/12)
+    flows = valuation.flows
+    demand = flows.benefit_due + flows.expense_due
+    future = np.zeros(len(flows))
+    reserve = 0.0
+    for k in range(len(flows)-1, -1, -1):
+        future[k] = reserve
+        reserve = (float(demand.iloc[k])+reserve)/discount
+    if not math.isclose(reserve, valuation.initial_liability, rel_tol=1e-9, abs_tol=1e-8):
+        raise ValueError("Flujos y obligación inicial no concilian")
+    assets, arrears = valuation.initial_capital, 0.0
+    rows = []
+    for k, row in enumerate(flows.itertuples()):
+        opening = assets
+        income = opening*monthly_return
+        available = max(0.0, opening+income)
+        due = float(row.benefit_due+row.expense_due)
+        required_support = max(0.0, due-available)
+        external_support = required_support if regime == "guarantee" else 0.0
+        factor = min(1.0, available/due) if due > 0 else 1.0
+        funded_benefit, funded_expense = row.benefit_due*factor, row.expense_due*factor
+        benefit_paid = row.benefit_due if regime == "guarantee" else funded_benefit
+        expense_paid = row.expense_due if regime == "guarantee" else funded_expense
+        unpaid_benefit, unpaid_expense = row.benefit_due-benefit_paid, row.expense_due-expense_paid
+        arrears += unpaid_benefit+unpaid_expense
+        assets = max(0.0, opening+income+external_support-benefit_paid-expense_paid)
+        rows.append(dict(month=row.month, opening_assets=opening, investment_income=income,
+            benefit_due=row.benefit_due, benefits_funded_by_pool=funded_benefit,
+            benefits_paid=benefit_paid, expense_due=row.expense_due, expenses_funded_by_pool=funded_expense,
+            expenses_paid=expense_paid, required_support=required_support, external_support=external_support,
+            closing_assets=assets, unpaid_benefits=unpaid_benefit, unpaid_expenses=unpaid_expense,
+            cumulative_unpaid=arrears, future_liability_in_horizon=future[k],
+            pending_obligations=arrears+future[k], future_reserve_gap=max(0.0, future[k]-assets),
+            expected_survivors=row.principal_survival_end,
+            beneficiary_benefit_due=row.beneficiary_benefit_due))
+    projection = pd.DataFrame(rows)
+    pv_factors = (1+valuation.assumptions.annual_discount)**(-projection.month/12)
+    insufficient = projection.loc[projection.required_support > 1e-9, "month"]
+    summary = dict(regime=regime, participants=len(valuation.individuals),
+        initial_capital=valuation.initial_capital, initial_liability=valuation.initial_liability,
+        initial_coverage=valuation.initial_coverage,
+        initial_funding_gap=max(0.0, valuation.initial_liability-valuation.initial_capital),
+        first_insufficiency_month=int(insufficient.iloc[0]) if len(insufficient) else None,
+        required_support_total=float(projection.required_support.sum()),
+        required_support_pv=float((projection.required_support*pv_factors).sum()),
+        external_support_total=float(projection.external_support.sum()),
+        external_support_pv=float((projection.external_support*pv_factors).sum()),
+        final_assets=float(projection.closing_assets.iloc[-1]),
+        unpaid_total=float(projection.cumulative_unpaid.iloc[-1]),
+        remaining_expected_survivors=float(projection.expected_survivors.iloc[-1]),
+        terminal_pending=valuation.terminal_pending,
+        horizon_months=len(flows))
+    return MonthlyPoolResult(projection, summary)

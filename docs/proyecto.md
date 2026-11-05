@@ -68,3 +68,7 @@ Se utilizarán como inspiración conceptual; el modelo deberá adaptarse al cont
 - Escenarios de sostenibilidad con sensibilidad de supuestos.
 - Reportes de tablas y gráficos con interpretaciones automáticas revisables.
 - Registro de supuestos, validaciones, decisiones y limitaciones.
+
+## Desarrollo determinístico implementado
+
+La [fase 2](integracion_actuarial.md) implementa una integración sintética de ISC, VPA/RAC y bolsa mensual, con garantía hipotética y sensibilidades. La valoración de obligaciones vitalicias completas y la validación institucional permanecen pendientes.
