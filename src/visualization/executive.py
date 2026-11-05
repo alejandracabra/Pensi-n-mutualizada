@@ -26,15 +26,16 @@ from src.actuarial.eligibility import (
 )
 from src.data.loader import find_workbook, load_workbook
 
-BLUE = "#0033A0"
-YELLOW = "#FFE946"
-CYAN = "#00AEC7"
-LIGHT_BLUE = "#4EC3E0"
+from src.visualization.palette import (
+    SURA_PRIMARY as BLUE, SURA_YELLOW as YELLOW,
+    SURA_SECONDARY as CYAN, SURA_ACCENT as LIGHT_BLUE,
+)
 GRAY = "#667085"
 LIGHT_GRAY = "#D9DEE7"
 PALE_BLUE = "#EEF3FA"
 WHITE = "#FFFFFF"
-FONT = "Sura Sans"
+from matplotlib import font_manager
+FONT = "Sura Sans" if any(f.name == "Sura Sans" for f in font_manager.fontManager.ttflist) else "DejaVu Sans"
 FIGURE_SIZE = (40 / 3, 7.5)
 DPI = 300
 
@@ -199,7 +200,7 @@ def _composition_chart(
     counts = [int(combinations.get((left, right), 0)) for left, right, _ in keys]
     shares = [count / len(frame) * 100 for count in counts]
     fig, ax = _canvas(
-        "Los estados financieros se superponen en 19.356 registros",
+        "Composición según estados financieros de la fuente",
         "Composición mutuamente excluyente según las dos clasificaciones de la base",
         "La base no contiene casos «solo descapitalizado»: todos los descapitalizados también "
         "están marcados como desfinanciados. Cada registro aparece una sola vez.",
@@ -262,7 +263,7 @@ def _age_chart(
     age = pd.to_numeric(applicable["edad"], errors="coerce")
     edges = np.arange(0, 131, 5)
     fig, ax = _canvas(
-        "La mediana de edad es menor en las cuentas descapitalizadas",
+        "Distribución de edad por estado de la fuente",
         "Distribución porcentual de edades por clasificación de descapitalización",
         "Cada grupo se normaliza por su propio tamaño para comparar perfiles, no volúmenes. "
         "El universo aplicable sigue el criterio de riesgo observado en la base.",
@@ -335,7 +336,7 @@ def _capital_chart(
         applicable["capital_mas_bono"], errors="coerce"
     )
     fig, ax = _canvas(
-        "El capital más bono difiere entre cuentas descapitalizadas y no descapitalizadas",
+        "Capital más bono por estado de la fuente",
         "Percentiles de capital disponible en el universo aplicable · COP",
         "La escala horizontal es logarítmica. P10–P90: línea; P25–P75: intervalo; "
         "P50: mediana; P99: rombo. Se excluyen capitales no positivos solo para esta escala; "
@@ -500,7 +501,7 @@ def _isc_segment_chart(
     total = int(segments.notna().sum())
     shares = [count / max(total, 1) * 100 for count in counts]
     fig, ax = _canvas(
-        "El 64,4% del universo calculable tiene ISC menor que 1,00",
+        "Clasificación ISC en el universo aplicable y calculable",
         "Segmentación exploratoria en grupos mutuamente excluyentes",
         "ISC = (Capital + Bono) / Capital necesario para financiar un SMMLV. Los intervalos "
         "segmentan, pero no determinan elegibilidad final para la modalidad mutualizada.",
@@ -542,7 +543,7 @@ def _isc_segment_chart(
         variables="Capital + Bono; Capital necesario para SMMLV; Riesgo (aplicabilidad)",
         population=(
             f"ISC calculable: {_format_integer(total)} de "
-            f"{_format_integer(len(frame))} registros aplicables."
+            f"{_format_integer(int(calculate_isc(frame)['isc_aplicable'].sum()))} registros aplicables."
         ),
         finding=(
             f"{_format_integer(counts[0])} con ISC < 1,00; "
@@ -569,7 +570,7 @@ def _capital_scenarios_chart(
         calculated, thresholds=DEFAULT_ISC_THRESHOLDS
     )
     fig, ax = _canvas(
-        "La suma de capital requerido supera al capital disponible en cada escenario",
+        "Capital disponible y requerimiento individual por umbral",
         "Agregados de registros candidatos por umbral de ISC · billones de COP",
         "«Capital requerido» es la suma de capital_necesario_sm individual exportado por el "
         "cálculo actuarial externo. No es el pasivo ni el déficit actuarial de la bolsa "
@@ -606,7 +607,7 @@ def _capital_scenarios_chart(
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
                 bar.get_height() + max(required) * 0.018,
-                _format_billions(bar.get_height()),
+                _format_decimal(bar.get_height(), 1),
                 ha="center",
                 va="bottom",
                 color=BLUE,
@@ -649,7 +650,7 @@ def _candidate_expansion_chart(
     total = base_count + additional_count
     growth = additional_count / max(base_count, 1) * 100
     fig, ax = _canvas(
-        "Ampliar el umbral a ISC < 1,20 suma 2.931 registros",
+        "Grupos exploratorios con ISC menor que 1,20",
         "Separación entre descapitalización observada y candidatos adicionales del rango",
         "El segmento adicional tiene ISC entre 1,00 y <1,20: su capital + bono alcanza el "
         "requerimiento individual observado, con menor holgura relativa según este cociente. "
@@ -735,7 +736,7 @@ def _candidate_expansion_chart(
 def build_executive_charts(
     frame: pd.DataFrame,
     source_name: str = "Base_Proyecto.xlsx",
-    cutoff: str = "31/08/2026",
+    cutoff: str = "no informado",
 ) -> tuple[list[ExecutiveChart], pd.DataFrame, str]:
     """Build the six PowerPoint-ready figures and return scenario data and date note."""
     generation_max, date_note, _, _ = _base_metadata(frame, source_name, cutoff)
@@ -857,7 +858,7 @@ def generate_executive_package(
     frame: pd.DataFrame,
     reports_dir: str | Path,
     source_name: str = "Base_Proyecto.xlsx",
-    cutoff: str = "31/08/2026",
+    cutoff: str = "no informado",
 ) -> dict[str, Path]:
     """Export six 16:9 PNG/SVG figures, summary tables, and a separate HTML report."""
     output = Path(reports_dir)
@@ -910,7 +911,7 @@ if __name__ == "__main__":
     workbook = find_workbook()
     report_paths = generate_executive_package(
         load_workbook(workbook),
-        workbook.parent / "reports",
+        Path(__file__).resolve().parents[2] / "reports",
         source_name=workbook.name,
     )
     for output_path in report_paths.values():

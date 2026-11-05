@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.actuarial.eligibility import isc_universe_summary
+
 import html
 from pathlib import Path
 from typing import Any
@@ -802,6 +804,8 @@ def build_markdown_report(
             "únicos. El Excel contiene valores exportados, no las fórmulas del cálculo "
             "actuarial externo; este informe no audita los supuestos de beneficiarios ni "
             "expectativa de vida. Valide estas reglas con el área dueña del cálculo.\n\n"
+            "### Universo y clasificación ISC\n\n"
+            f"{_table_markdown(isc_universe_summary(frame))}\n\n"
             f"Diagnóstico: {isc_diagnostics}.\n\n"
             f"{isc_validation}"
             f"{_table_markdown(scenario_table)}\n"
@@ -1076,6 +1080,9 @@ def build_dashboard_html(
 <main><section><h2>Resumen ejecutivo</h2><p>Exploración de {kpis["registros"]:,} registros y {kpis["variables"]} variables. Los gráficos se construyen sobre agregados y estadísticas resumidas; no se incluyen observaciones individuales.</p>
 <div class="kpis">{_kpi_cards(kpis)}</div></section>
 {isc_table}
+<section class="summary"><h2>Universo y clasificación ISC</h2>
+<p>Partición del total de registros. ISC &lt; 1 clasifica descapitalización solo en el universo aplicable y calculable; los umbrales adicionales son exploratorios.</p>
+{isc_universe_summary(frame).to_html(index=False, escape=True) if all(c in frame for c in ('capital_mas_bono', 'capital_necesario_sm', 'edad', 'riesgo')) else '<p>Faltan variables para clasificar el universo ISC.</p>'}</section>
 {filter_panel}
 <section class="summary"><h2>Conclusiones automáticas</h2><ul>{findings}</ul>
 <p class="note">La cobertura experimental usa capital sin Bono / capital necesario para 1 SM y toda la base; no equivale a la clasificación oficial de descapitalización ni mide solvencia mutualizada.</p></section>

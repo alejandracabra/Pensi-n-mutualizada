@@ -118,3 +118,7 @@ No agregue archivos de datos con `git add -f`. Revise `git status` y `git diff -
 ## Estado
 
 Estructura inicial del proyecto. La estimación de mortalidad, el modelo mutualizado, los escenarios y la generación automática de reportes se desarrollarán y validarán en etapas posteriores.
+
+## Piloto sintético de mutualización
+
+Ver [revisión inicial](docs/revision_inicial.md) y [supuestos, límites y ejecución](docs/piloto_mutualizacion.md). Ejecutar `python -m src.simulation.pilot` desde la raíz. No utiliza datos reales ni concluye viabilidad.

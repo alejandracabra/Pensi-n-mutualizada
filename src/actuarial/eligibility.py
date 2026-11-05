@@ -7,7 +7,6 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 from src.visualization.palette import (
     PLOTLY_TEMPLATE,
@@ -166,11 +165,10 @@ def isc_data_quality(frame: pd.DataFrame) -> dict[str, int]:
         "capital_sm_no_positivo": int(required.le(0).sum()),
     }
     if "descapitalizacion" in frame:
-        observed_flag = pd.to_numeric(
-            frame["descapitalizacion"], errors="coerce"
-        ).gt(0)
+        observed_source = pd.to_numeric(frame["descapitalizacion"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        observed_flag = observed_source.gt(0)
         calculated_flag = frame["descapitalizada_calc"].astype("boolean")
-        comparable = applicable & calculated_flag.notna()
+        comparable = applicable & calculated_flag.notna() & observed_source.notna()
         diagnostics["clasificacion_comparable"] = int(comparable.sum())
         diagnostics["coincidencias_clasificacion"] = int(
             calculated_flag.loc[comparable].astype(bool)
@@ -220,105 +218,35 @@ def isc_data_quality(frame: pd.DataFrame) -> dict[str, int]:
     return diagnostics
 
 
+def isc_universe_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    """Partición exhaustiva: no aplicable, no calculable, ISC < 1, ISC >= 1."""
+    calculated = calculate_isc(frame)
+    applicable = calculated["isc_aplicable"]
+    valid = calculated["ISC"].notna()
+    masks = {
+        "No aplicable": ~applicable,
+        "Aplicable sin ISC calculable": applicable & ~valid,
+        "Descapitalizada (ISC < 1)": applicable & valid & calculated["ISC"].lt(1),
+        "No descapitalizada (ISC >= 1)": applicable & valid & calculated["ISC"].ge(1),
+    }
+    return pd.DataFrame({"grupo": list(masks), "registros": [int(m.sum()) for m in masks.values()]})
+
+
 def eligibility_figures(scenarios: pd.DataFrame) -> dict[str, go.Figure]:
-    """Grafica registros candidatos y agregados de capital + bono por umbral."""
+    """Un concepto por gráfico, sin ejes dobles. Grupos acumulados, no elegibilidad."""
     if scenarios.empty:
         return {}
-
-    threshold_labels = [f"< {threshold:.2f}" for threshold in scenarios["Umbral_ISC"]]
-    counts = scenarios["N_candidatos"].astype(int)
-    count_figure = go.Figure()
-    count_figure.add_trace(
-        go.Bar(
-            x=threshold_labels,
-            y=counts,
-            name="Registros candidatos",
-            marker_color=SURA_PRIMARY,
-            customdata=scenarios[["Pct_universo_aplicable", "Pct_registros_base"]].to_numpy(),
-            hovertemplate=(
-                "Criterio: ISC %{x}<br>Registros candidatos: %{y:,}"
-                "<br>% del universo aplicable: %{customdata[0]:.1f}%"
-                "<br>% del total de registros: %{customdata[1]:.1f}%<extra></extra>"
-            ),
-        )
-    )
-    count_figure.add_trace(
-        go.Scatter(
-            x=threshold_labels,
-            y=scenarios["Pct_universo_aplicable"],
-            name="% del universo aplicable",
-            mode="lines+markers",
-            line={"color": SURA_SECONDARY, "width": 3},
-            marker={"size": 9},
-            yaxis="y2",
-            hovertemplate="%{x}<br>% universo aplicable: %{y:.1f}%<extra></extra>",
-        )
-    )
-    count_figure.update_layout(
-        title="Escenarios de registros candidatos por umbral de ISC",
-        xaxis_title="Criterio en el universo aplicable (ISC estrictamente menor que el umbral)",
-        yaxis={"title": "Registros candidatos"},
-        yaxis2={
-            "title": "% del universo aplicable bajo el umbral",
-            "overlaying": "y",
-            "side": "right",
-            "range": [0, 100],
-        },
-        template=PLOTLY_TEMPLATE,
-        legend={"orientation": "h", "y": 1.12},
-    )
-
-    capital_figure = make_subplots(specs=[[{"secondary_y": True}]])
-    capital_figure.add_trace(
-        go.Bar(
-            x=threshold_labels,
-            y=scenarios["Capital_mas_bono_total"] / 1e12,
-            name="Capital + bono disponible agregado",
-            marker_color=SURA_PRIMARY,
-            hovertemplate="%{x}<br>Capital + bono disponible: %{y:.2f} billones<extra></extra>",
-        ),
-        secondary_y=False,
-    )
-    capital_figure.add_trace(
-        go.Bar(
-            x=threshold_labels,
-            y=scenarios["Capital_SM_requerido"] / 1e12,
-            name="Capital requerido agregado",
-            marker_color=SURA_ACCENT,
-            hovertemplate="%{x}<br>Capital requerido: %{y:.2f} billones<extra></extra>",
-        ),
-        secondary_y=False,
-    )
-    capital_figure.add_trace(
-        go.Scatter(
-            x=threshold_labels,
-            y=scenarios["Edad_media"],
-            name="Edad media",
-            mode="lines+markers",
-            line={"color": SURA_DARK, "width": 3},
-            marker={"color": SURA_LIME, "size": 9, "line": {"color": SURA_DARK, "width": 1}},
-            hovertemplate="%{x}<br>Edad media: %{y:.1f} años<extra></extra>",
-        ),
-        secondary_y=True,
-    )
-    capital_figure.update_layout(
-        title="Capital + bono disponible y requerido en registros candidatos",
-        barmode="group",
-        template=PLOTLY_TEMPLATE,
-        legend={"orientation": "h", "y": 1.12},
-    )
-    capital_figure.update_xaxes(
-        title_text="Criterio aplicado (ISC estrictamente menor que el umbral)"
-    )
-    capital_figure.update_yaxes(
-        title_text="Capital + bono agregado (billones en unidades monetarias de la fuente)",
-        secondary_y=False,
-    )
-    capital_figure.update_yaxes(
-        title_text="Edad media (años)",
-        secondary_y=True,
-    )
-    return {
-        "isc_escenarios_registros": count_figure,
-        "isc_escenarios_capital": capital_figure,
-    }
+    labels = [f"< {t:.2f}" for t in scenarios["Umbral_ISC"]]
+    counts = go.Figure(go.Bar(x=labels, y=scenarios["N_candidatos"],
+        marker_color=SURA_PRIMARY, customdata=scenarios[["Pct_universo_aplicable"]],
+        hovertemplate="ISC %{x}<br>Registros: %{y}<br>% aplicable: %{customdata[0]:.1f}%<extra></extra>"))
+    counts.update_layout(title="Grupos exploratorios acumulados por umbral ISC",
+        xaxis_title="ISC estrictamente menor que el umbral", yaxis_title="Registros", template=PLOTLY_TEMPLATE)
+    capital = go.Figure()
+    for column, label, color in [("Capital_mas_bono_total", "Capital + bono", SURA_PRIMARY),
+                                  ("Capital_SM_requerido", "Requerimiento individual agregado", SURA_SECONDARY)]:
+        capital.add_bar(x=labels, y=scenarios[column] / 1e12, name=label, marker_color=color)
+    capital.update_layout(title="Capital disponible y requerimiento individual agregado",
+        xaxis_title="ISC estrictamente menor que el umbral", yaxis_title="Billones de unidades monetarias de la fuente",
+        barmode="group", template=PLOTLY_TEMPLATE)
+    return {"isc_escenarios_registros": counts, "isc_escenarios_capital": capital}
